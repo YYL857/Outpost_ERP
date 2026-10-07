@@ -2,11 +2,17 @@
   "name": "outpost-erp",
   "private": true,
   "version": "0.1.0",
-  "description": "前哨 Outpost — 跨境电商 ERP",
+  "description": "慧运营 — 跨境电商 ERP",
   "scripts": {
     "dev": "pnpm -r --parallel --filter @outpost/web --filter @outpost/api run dev",
     "dev:web": "pnpm --filter @outpost/web dev",
     "dev:api": "pnpm --filter @outpost/api dev",
+    "services:start": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/start-services.ps1",
+    "services:stop": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/stop-services.ps1",
+    "services:status": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/status-services.ps1",
+    "services:autostart": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/install-autostart.ps1",
+    "services:autostart:off": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/install-autostart.ps1 -Uninstall",
+    "services:autostart:status": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/install-autostart.ps1 -Status",
     "build": "pnpm -r run build"
   },
   "engines": {

@@ -1,20 +1,25 @@
+/**
+ * Catalog / 影刀 Estimated Fees 与 FBN 尺寸导入（直接写 AppState，不经 feeSnapshots）
+ */
 import type { AppState } from "../../../common/types.js";
 import { saveState } from "../../../data/store.js";
 import { enqueueInbox } from "../../../modules/sync/inbox.js";
-import { processPendingInbox } from "../../../modules/sync/pipeline.js";
-import { pushAlert } from "../../../modules/sync/alerts.js";
+import { upsertDimsGapFill, upsertFeeEstimate } from "./gap-fill-ingest.js";
 import {
   detectDomainFromFilename,
+  parseAdsContent,
   parseCatalogContent,
+  parseCatalogEstimatedFees,
   parseFeesContent,
+  parseFbnDimsContent,
   parseOrdersContent,
   parseSalesContent,
   parseStockContent,
   parseStockHintsFromCatalogContent,
   type PortalImportDomain,
 } from "./parsers.js";
-import { fetchPortalBySession } from "./session-fetcher.js";
 import type {
+  NoonAdsDto,
   NoonCatalogDto,
   NoonFeeDto,
   NoonOrderDto,
@@ -51,16 +56,37 @@ export function importPortalContent(
       state.portalCache.stock = [...(state.portalCache.stock ?? []), ...stockHints];
       enqueueParsed(state, "stock", stockHints);
     }
+    // Catalog Export 若含 Estimated Fees 列，顺带写入 feeEstimates
+    const est = parseCatalogEstimatedFees(input.content, format);
+    for (const e of est) upsertFeeEstimate(state, e, "noon:catalog_export");
   } else if (input.domain === "stock") {
     const rows = parseStockContent(input.content, format);
     state.portalCache.stock = rows;
     count = rows.length;
     enqueueParsed(state, "stock", rows);
+    // Inventory 导出若含尺寸列，仅补空写入 skuDims
+    const dims = parseFbnDimsContent(input.content, format);
+    for (const d of dims) upsertDimsGapFill(state, d, "noon:fbn_inventory");
   } else if (input.domain === "sales") {
     const rows = parseSalesContent(input.content, format);
     state.portalCache.sales = rows;
     count = rows.length;
     enqueueParsed(state, "sales", rows);
+  } else if (input.domain === "ads") {
+    const rows = parseAdsContent(input.content, format, {
+      filename: input.filename,
+    });
+    state.portalCache.ads = rows;
+    count = rows.length;
+    enqueueParsed(state, "ads", rows);
+  } else if (input.domain === "fee_estimates") {
+    const rows = parseCatalogEstimatedFees(input.content, format);
+    for (const e of rows) upsertFeeEstimate(state, e, "noon:estimated_fees");
+    count = rows.length;
+  } else if (input.domain === "fbn_dims") {
+    const rows = parseFbnDimsContent(input.content, format);
+    for (const d of rows) upsertDimsGapFill(state, d, "noon:fbn_inventory");
+    count = rows.length;
   } else {
     const rows = parseFeesContent(input.content, format);
     state.portalCache.fees = rows;
@@ -107,48 +133,16 @@ export function importPortalFileByName(
   });
 }
 
-export async function runPortalSessionFetch(state: AppState) {
-  const result = await fetchPortalBySession(state.noon.portal);
-  state.portalCache = {
-    orders: result.orders,
-    catalog: result.catalog,
-    stock: result.stock,
-    sales: state.portalCache.sales ?? [],
-    fees: state.portalCache.fees ?? [],
-    updatedAt: new Date().toISOString(),
-  };
-  state.noon.portal.lastFetchAt = state.portalCache.updatedAt;
-  state.noon.portal.lastImportSummary = `会话拉取 订单${result.orders.length}/商品${result.catalog.length}/库存${result.stock.length}`;
-
-  if (result.orders.length) enqueueParsed(state, "orders", result.orders);
-  if (result.catalog.length) enqueueParsed(state, "catalog", result.catalog);
-  if (result.stock.length) enqueueParsed(state, "stock", result.stock);
-
-  for (const w of result.warnings) {
-    pushAlert(state, {
-      level: "warning",
-      title: "门户采集警告",
-      detail: w,
-    });
-  }
-
-  saveState(state);
-  await processPendingInbox(state);
-  return {
-    ...result,
-    summary: state.noon.portal.lastImportSummary,
-  };
-}
-
 function enqueueParsed(
   state: AppState,
-  domain: PortalDomain,
+  domain: Exclude<PortalDomain, "fee_estimates" | "fbn_dims">,
   rows:
     | NoonOrderDto[]
     | NoonCatalogDto[]
     | NoonStockDto[]
     | NoonSalesDto[]
-    | NoonFeeDto[],
+    | NoonFeeDto[]
+    | NoonAdsDto[],
 ) {
   for (const row of rows) {
     if (domain === "orders") {
@@ -185,6 +179,15 @@ function enqueueParsed(
         source: "manual",
         domain: "sales",
         entityKey: `${r.partner_sku}@${r.date}`,
+        payload: r,
+      });
+    } else if (domain === "ads") {
+      const r = row as NoonAdsDto;
+      enqueueInbox(state, {
+        eventId: `portal:ads:${r.partner_sku}:${r.campaign}:${r.from_date}:${r.to_date}:${r.updated_at}`,
+        source: "manual",
+        domain: "ads",
+        entityKey: `${r.partner_sku}@${r.campaign}@${r.from_date}@${r.to_date}`,
         payload: r,
       });
     } else {

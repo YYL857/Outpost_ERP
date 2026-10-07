@@ -14,7 +14,7 @@ export class NoonHttpError extends Error {
   }
 }
 
-type NoonCredentialsFile = {
+export type NoonCredentialsFile = {
   key_id: string;
   private_key: string;
   project_code: string;
@@ -44,16 +44,27 @@ function credentialsPath() {
   return getNoonCredentialsPath();
 }
 
-export function readNoonCredentialsFile(): NoonCredentialsFile | null {
-  const p = credentialsPath();
-  if (!existsSync(p)) return null;
+/** 从任意绝对路径读取 Access App 下载的 Service Account JSON */
+export function readNoonCredentialsFromFile(
+  filePath: string,
+): NoonCredentialsFile | null {
+  const p = filePath.trim();
+  if (!p || !existsSync(p)) return null;
   try {
     const raw = JSON.parse(readFileSync(p, "utf8")) as NoonCredentialsFile;
     if (!raw.key_id || !raw.private_key || !raw.project_code) return null;
-    return raw;
+    return {
+      key_id: String(raw.key_id).trim(),
+      private_key: String(raw.private_key).trim(),
+      project_code: String(raw.project_code).trim(),
+    };
   } catch {
     return null;
   }
+}
+
+export function readNoonCredentialsFile(): NoonCredentialsFile | null {
+  return readNoonCredentialsFromFile(credentialsPath());
 }
 
 function base64url(buf: Buffer | string) {

@@ -4,6 +4,11 @@ import { saveState } from "../../data/store.js";
 import { listInbox } from "./inbox.js";
 import { processPendingInbox, pullDomain } from "./pipeline.js";
 import { pushAlert } from "./alerts.js";
+import {
+  getLastAssemblySync,
+  isAssemblySyncRunning,
+  runAssemblySync,
+} from "./assembly-sync.js";
 
 function overallTone(state: AppState): SyncJobStatus {
   if (!state.noon.enabled) return "warning";
@@ -61,6 +66,12 @@ export function createSyncRouter(getState: () => AppState) {
           state.syncJobs.find((j) => j.domain === "fees")?.lastSuccessAt ?? null,
         primaryPage: "财务报表",
       },
+      ads: {
+        count: state.adsFacts.length,
+        lastSuccessAt:
+          state.syncJobs.find((j) => j.domain === "ads")?.lastSuccessAt ?? null,
+        primaryPage: "Catalog（投产比） / 广告管理",
+      },
     };
     res.json({
       data: {
@@ -87,6 +98,14 @@ export function createSyncRouter(getState: () => AppState) {
 
   router.get("/alerts", (_req, res) => {
     res.json({ data: getState().syncAlerts });
+  });
+
+  router.post("/alerts/clear", (_req, res) => {
+    const state = getState();
+    const cleared = state.syncAlerts.length;
+    state.syncAlerts = [];
+    saveState(state);
+    res.json({ data: { cleared } });
   });
 
   router.get("/inbox", (req, res) => {
@@ -141,7 +160,13 @@ export function createSyncRouter(getState: () => AppState) {
       return;
     }
 
-    if (domain !== "orders" && domain !== "catalog" && domain !== "stock") {
+    if (
+      domain !== "orders" &&
+      domain !== "catalog" &&
+      domain !== "stock" &&
+      domain !== "sales" &&
+      domain !== "fees"
+    ) {
       res.status(404).json({ error: "未知同步域" });
       return;
     }
@@ -162,6 +187,55 @@ export function createSyncRouter(getState: () => AppState) {
   router.post("/process-inbox", async (_req, res) => {
     const result = await processPendingInbox(getState());
     res.json({ data: result });
+  });
+
+  /**
+   * 汇总同步：Noon → 影刀广告落盘入库 → 飞书本地域
+   * body: { skipNoon?, skipAds?, skipFeishu?, forceIngest?, feishuDocIds? }
+   */
+  router.post("/assembly-sync", async (req, res) => {
+    if (isAssemblySyncRunning()) {
+      res.status(409).json({
+        error: "汇总同步正在进行中",
+        data: getLastAssemblySync(),
+      });
+      return;
+    }
+    const state = getState();
+    try {
+      const result = await runAssemblySync(state, {
+        triggeredBy: "manual",
+        skipNoon: Boolean(req.body?.skipNoon),
+        skipAds: Boolean(req.body?.skipAds),
+        skipFeishu: Boolean(req.body?.skipFeishu),
+        forceIngest: Boolean(req.body?.forceIngest),
+        feishuDocIds: Array.isArray(req.body?.feishuDocIds)
+          ? req.body.feishuDocIds.map(String)
+          : undefined,
+      });
+      res.status(result.ok ? 200 : 207).json({
+        data: result,
+        message: result.message,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      pushAlert(state, {
+        level: "danger",
+        title: "汇总同步失败",
+        detail: message,
+      });
+      saveState(state);
+      res.status(500).json({ error: message });
+    }
+  });
+
+  router.get("/assembly-sync/last", (_req, res) => {
+    res.json({
+      data: {
+        running: isAssemblySyncRunning(),
+        last: getLastAssemblySync(),
+      },
+    });
   });
 
   router.post("/alerts/demo-fail", (_req, res) => {

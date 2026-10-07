@@ -1,6 +1,7 @@
 /**
  * Partner Impex：异步导出 CSV（绕过 Seller Lab / Akamai）。
  * 流程：create → poll status → download_url → CSV 文本
+ * Noon 限额约 30 分钟内 20 次；命中后进程内冷却（OUTPOST_IMPEX_COOLDOWN_MS）。
  */
 import type { NoonConnection } from "../../common/types.js";
 import { NoonHttpError, noonRequest, readNoonCredentialsFile } from "./http.js";
@@ -40,6 +41,40 @@ function withImpexLock<T>(fn: () => Promise<T>): Promise<T> {
     () => undefined,
   );
   return next;
+}
+
+/** 命中 Noon 导出限额后的进程内冷却（poller / inbox / 手动同步共用） */
+let impexCooldownUntil = 0;
+
+function impexCooldownMs(): number {
+  return Math.max(
+    60_000,
+    Number(process.env.OUTPOST_IMPEX_COOLDOWN_MS ?? 30 * 60 * 1000),
+  );
+}
+
+export function getImpexCooldownRemainingMs(): number {
+  return Math.max(0, impexCooldownUntil - Date.now());
+}
+
+export function isImpexCoolingDown(): boolean {
+  return getImpexCooldownRemainingMs() > 0;
+}
+
+export function markImpexExportLimitHit(cooldownMs = impexCooldownMs()): void {
+  impexCooldownUntil = Math.max(impexCooldownUntil, Date.now() + cooldownMs);
+}
+
+export function assertImpexAvailable(): void {
+  const rem = getImpexCooldownRemainingMs();
+  if (rem <= 0) return;
+  throw new Error(
+    `Impex 导出冷却中（约 ${Math.ceil(rem / 60_000)} 分钟后可再试；Noon 限额约 30 分钟内 20 次）。`,
+  );
+}
+
+export function isImpexLimitMessage(msg: string): boolean {
+  return /export limit|限额已用尽|冷却中|exports in the last/i.test(msg);
 }
 
 export function impexDateYmd(d = new Date()): string {
@@ -167,6 +202,7 @@ export async function runImpexExportCsv(
   }
 
   return withImpexLock(async () => {
+    assertImpexAvailable();
     let exportCode = "";
     let lastErr: unknown;
     for (let attempt = 0; attempt < 12; attempt++) {
@@ -191,8 +227,9 @@ export async function runImpexExportCsv(
           continue;
         }
         if (/export limit reached|exports in the last/i.test(msg)) {
+          markImpexExportLimitHit();
           throw new Error(
-            `Impex 导出限额已用尽（通常 30 分钟内 2 次）。请稍后再同步。详情：${msg.slice(0, 200)}`,
+            `Impex 导出限额已用尽（Noon 约 30 分钟内 20 次）。请稍后再同步。详情：${msg.slice(0, 200)}`,
           );
         }
         throw err;

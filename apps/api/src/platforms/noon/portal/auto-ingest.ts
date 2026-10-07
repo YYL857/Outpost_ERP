@@ -183,6 +183,134 @@ export async function runAutoIngest(
   return result;
 }
 
+export type LatestAdsIngestResult = {
+  importDir: string;
+  ok: boolean;
+  skipped: boolean;
+  reason?: string;
+  fileName?: string;
+  filePath?: string;
+  fileMtime?: string;
+  reportFrom?: string | null;
+  reportTo?: string | null;
+  count?: number;
+};
+
+/**
+ * 汇总专用：只强制入库「最新」ads_sku_*.csv（mtime 优先，文件名 toDate 打破平局）。
+ * 避免目录里多份历史报表时，6h 汇总仍沿用旧文件语义。
+ */
+export async function ingestLatestAdsFile(
+  state: AppState,
+): Promise<LatestAdsIngestResult> {
+  const importDir = getImportDir();
+  if (!existsSync(importDir)) mkdirSync(importDir, { recursive: true });
+
+  const picked = pickLatestAdsSkuFile(importDir);
+  if (!picked) {
+    return {
+      importDir,
+      ok: true,
+      skipped: true,
+      reason: "portal-imports 无 ads_sku_*.csv",
+    };
+  }
+
+  const content = readFileSync(picked.filePath, "utf8");
+  const st = statSync(picked.filePath);
+  const hash = fileHash(content);
+  const imported = importPortalFileByName(state, picked.fileName, content);
+  for (let i = 0; i < 50; i++) {
+    const { processed } = await processPendingInbox(state, 200);
+    if (!processed) break;
+  }
+
+  const index = loadIndex(importDir);
+  const key = picked.fileName.toLowerCase();
+  index.files[key] = {
+    key,
+    filename: picked.fileName,
+    domain: "ads",
+    mtimeMs: st.mtimeMs,
+    size: st.size,
+    hash,
+    ingestedAt: new Date().toISOString(),
+    count: imported.count,
+  };
+  saveIndex(importDir, index);
+  state.noon.portal.lastImportAt = new Date().toISOString();
+  state.noon.portal.lastImportSummary =
+    `广告权威源 ${picked.fileName} · 行${imported.count} · 报表${picked.reportFrom ?? "?"}→${picked.reportTo ?? "?"}`;
+  saveState(state);
+
+  return {
+    importDir,
+    ok: true,
+    skipped: false,
+    fileName: picked.fileName,
+    filePath: picked.filePath,
+    fileMtime: new Date(st.mtimeMs).toISOString(),
+    reportFrom: picked.reportFrom,
+    reportTo: picked.reportTo,
+    count: imported.count,
+  };
+}
+
+/** mtime 最新；同秒则取文件名 toDate、再 fromDate 更大者 */
+export function pickLatestAdsSkuFile(importDir?: string): {
+  fileName: string;
+  filePath: string;
+  mtimeMs: number;
+  reportFrom: string | null;
+  reportTo: string | null;
+} | null {
+  const dir = importDir ?? getImportDir();
+  if (!existsSync(dir)) return null;
+  const names = readdirSync(dir).filter(
+    (n) => /^ads_sku_.*\.csv$/i.test(n) && !n.startsWith("."),
+  );
+  if (!names.length) return null;
+
+  type Cand = {
+    fileName: string;
+    filePath: string;
+    mtimeMs: number;
+    reportFrom: string | null;
+    reportTo: string | null;
+  };
+  const cands: Cand[] = [];
+  for (const name of names) {
+    const filePath = join(dir, name);
+    try {
+      const st = statSync(filePath);
+      const m = name.match(
+        /ads_sku_(20\d{2}-\d{2}-\d{2}).{0,3}(20\d{2}-\d{2}-\d{2})/i,
+      );
+      cands.push({
+        fileName: name,
+        filePath,
+        mtimeMs: st.mtimeMs,
+        reportFrom: m?.[1] ?? null,
+        reportTo: m?.[2] ?? null,
+      });
+    } catch {
+      // skip
+    }
+  }
+  if (!cands.length) return null;
+  cands.sort((a, b) => {
+    if (b.mtimeMs !== a.mtimeMs) return b.mtimeMs - a.mtimeMs;
+    const bt = b.reportTo ?? "";
+    const at = a.reportTo ?? "";
+    if (bt !== at) return bt > at ? 1 : -1;
+    const bf = b.reportFrom ?? "";
+    const af = a.reportFrom ?? "";
+    if (bf !== af) return bf > af ? 1 : -1;
+    return b.fileName.localeCompare(a.fileName);
+  });
+  return cands[0]!;
+}
+
 /** 启动时 + 定时扫目录 */
 export function startImportDirWatcher(
   getState: () => AppState,

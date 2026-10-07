@@ -14,3 +14,10 @@ scripts/noon-discover/out/
 *.p12
 *credentials*sensitive*
 noon-session/
+
+# local secrets
+DS-key.txt
+
+
+# local Feishu doc IDs
+apps/api/config/feishu.docs.json

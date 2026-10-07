@@ -1,7 +1,9 @@
 import type {
   NoonCatalogDto,
   NoonClient,
+  NoonFeeDto,
   NoonOrderDto,
+  NoonSalesDto,
   NoonStockDto,
 } from "./types.js";
 import type { NoonConnection } from "../../common/types.js";
@@ -135,6 +137,47 @@ export class MockNoonClient implements NoonClient {
         price: 19.9,
         currency: "SAR",
         listing_type: "目录",
+        updated_at: ts,
+      },
+    ];
+  }
+
+  async fetchSalesSince(_since: string | null): Promise<NoonSalesDto[]> {
+    const day = new Date().toISOString().slice(0, 10);
+    const ts = new Date().toISOString();
+    return [
+      {
+        partner_sku: "SKU-DEMO-01",
+        date: day,
+        units: 3,
+        amount: 206.7,
+        updated_at: ts,
+      },
+      {
+        partner_sku: "SKU-DEMO-02",
+        date: day,
+        units: 1,
+        amount: 29.5,
+        updated_at: ts,
+      },
+    ];
+  }
+
+  async fetchFeesSince(_since: string | null): Promise<NoonFeeDto[]> {
+    const ts = new Date().toISOString();
+    return [
+      {
+        partner_sku: "SKU-DEMO-01",
+        commission_rate: 0.15,
+        outbound_fee: 7,
+        tax_amount: 2.6,
+        updated_at: ts,
+      },
+      {
+        partner_sku: "SKU-DEMO-02",
+        commission_rate: 0.12,
+        outbound_fee: 5,
+        tax_amount: 1.2,
         updated_at: ts,
       },
     ];

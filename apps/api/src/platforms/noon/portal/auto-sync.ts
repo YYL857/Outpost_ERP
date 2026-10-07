@@ -1,47 +1,38 @@
 import type { AppState } from "../../../common/types.js";
-import { pushAlert } from "../../../modules/sync/alerts.js";
 import { saveState } from "../../../data/store.js";
 import { pullDomain } from "../../../modules/sync/pipeline.js";
 import { enrichCatalogImages } from "../../../modules/catalog/enrich-images.js";
 import { runAutoIngest, type AutoIngestResult } from "./auto-ingest.js";
-import { runSopExport, type SopRunResult } from "./sop-runner.js";
-import {
-  probeSessionUsability,
-  type SessionProbeResult,
-} from "./session-probe.js";
 
 export type AutoSyncResult = {
-  sop: SopRunResult;
   ingest: AutoIngestResult;
   catalogCount: number;
   imagesUpdated?: number;
   message: string;
-  probe?: SessionProbeResult;
 };
 
 /**
  * 全自动同步主入口：
- * - live：Partner API Impex 拉 catalog/orders/stock
- * - portal：探针 → SOP → portal-imports 入库
+ * - live：Partner API Impex（配额约 30 分钟 20 次）
+ *   · 空 Catalog → 只拉 catalog
+ *   · 已有 Catalog → 优先补齐 sales/fees（Catalog 可视化关键），最多 2 域
+ *   · ads 无 Impex，靠影刀 → portal-imports
+ * - portal/mock：仅扫描 portal-imports 入库（不再使用浏览器登录态 / SOP）
  */
 export async function runAutoSync(
   state: AppState,
   opts?: { skipSop?: boolean; forceIngest?: boolean; skipProbe?: boolean },
 ): Promise<AutoSyncResult> {
+  void opts?.skipSop;
+  void opts?.skipProbe;
+
   if (state.noon.mode === "live") {
-    // Impex 常见限额 30 分钟 2 次：
-    // - 空 Catalog：只拉 catalog（1 次配额），orders 留给下次
-    // - 已有 Catalog：catalog + orders（最多 2 次）
-    // stock 由 catalog 内嵌 hints 覆盖，避免再烧 FBN export。
-    const domains =
-      state.catalog.length === 0
-        ? (["catalog"] as const)
-        : (["catalog", "orders"] as const);
+    const domains = pickLiveImpexDomains(state);
     const parts: string[] = [];
     for (const domain of domains) {
       try {
         await pullDomain(state, domain);
-        parts.push(`${domain}:ok`);
+        parts.push(`${domain}:ok(${domainCount(state, domain)})`);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         parts.push(`${domain}:fail(${message.slice(0, 80)})`);
@@ -57,20 +48,14 @@ export async function runAutoSync(
       // 补图失败不阻断主同步
     }
     const message =
-      `live Impex · ${parts.join(" · ")} · Catalog:${catalogCount} · Stock:${state.stock.length}` +
+      `live Impex · ${parts.join(" · ") || "noop"} · Catalog:${catalogCount}` +
+      ` · Stock:${state.stock.length} · Sales:${state.salesFacts.length}` +
+      ` · Fees:${state.feeSnapshots.length} · Ads:${state.adsFacts.length}` +
       (imagesUpdated ? ` · 补图:${imagesUpdated}` : "");
     state.noon.portal.lastFetchAt = new Date().toISOString();
     state.noon.portal.lastImportSummary = message;
     saveState(state);
     return {
-      sop: {
-        ok: true,
-        skipped: true,
-        message: "live 模式使用 Partner API Impex，已跳过门户 SOP",
-        downloadDir: "",
-        downloads: [],
-        reportResults: [],
-      },
       ingest: {
         importDir: "",
         scanned: 0,
@@ -85,91 +70,6 @@ export async function runAutoSync(
     };
   }
 
-  let sop: SopRunResult = {
-    ok: false,
-    skipped: true,
-    message: "已跳过 SOP 导出",
-    downloadDir: "",
-    downloads: [],
-    reportResults: [],
-  };
-  let probe: SessionProbeResult | undefined;
-
-  if (!opts?.skipSop) {
-    if (!opts?.skipProbe) {
-      try {
-        probe = await probeSessionUsability();
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        probe = {
-          usable: "unknown",
-          probedAt: new Date().toISOString(),
-          finalUrl: "",
-          httpStatus: null,
-          verdict: "PROBE_ERROR",
-          message: `探针异常：${message}`,
-          hasIdentityCookies: false,
-          probeUrl: "",
-        };
-      }
-
-      if (probe.usable !== "ok") {
-        sop = {
-          ok: false,
-          skipped: true,
-          message: `已跳过 SOP：登录态不可用（${probe.usable}）。${probe.message}`,
-          downloadDir: "",
-          downloads: [],
-          reportResults: [],
-        };
-        pushAlert(state, {
-          level: probe.usable === "blocked" ? "danger" : "warning",
-          title: "登录态探针未通过，已跳过自动导出",
-          detail: probe.message,
-        });
-        saveState(state);
-
-        const ingest = await runAutoIngest(state, { force: opts?.forceIngest });
-        const catalogCount = state.catalog.length;
-        const message = [
-          `SOP:跳过(探针${probe.usable})`,
-          `入库:新${ingest.imported}/跳过${ingest.skipped}/失败${ingest.failed.length}`,
-          `Catalog:${catalogCount}`,
-        ].join(" · ");
-        state.noon.portal.lastFetchAt = new Date().toISOString();
-        state.noon.portal.lastImportSummary = message;
-        saveState(state);
-        return { sop, ingest, catalogCount, message, probe };
-      }
-    }
-
-    try {
-      sop = await runSopExport();
-      if (!sop.ok && !sop.skipped) {
-        pushAlert(state, {
-          level: "warning",
-          title: "SOP 自动导出未完成",
-          detail: sop.message,
-        });
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      sop = {
-        ok: false,
-        skipped: false,
-        message,
-        downloadDir: "",
-        downloads: [],
-        reportResults: [],
-      };
-      pushAlert(state, {
-        level: "danger",
-        title: "SOP 自动导出失败",
-        detail: message,
-      });
-    }
-  }
-
   const ingest = await runAutoIngest(state, { force: opts?.forceIngest });
   const catalogCount = state.catalog.length;
   let imagesUpdated = 0;
@@ -182,7 +82,6 @@ export async function runAutoSync(
   saveState(state);
 
   const message = [
-    sop.skipped ? "SOP:跳过" : sop.ok ? `SOP:下载${sop.downloads.length}` : "SOP:失败",
     `入库:新${ingest.imported}/跳过${ingest.skipped}/失败${ingest.failed.length}`,
     `Catalog:${catalogCount}`,
     imagesUpdated ? `补图:${imagesUpdated}` : null,
@@ -194,5 +93,40 @@ export async function runAutoSync(
   state.noon.portal.lastImportSummary = message;
   saveState(state);
 
-  return { sop, ingest, catalogCount, imagesUpdated, message, probe };
+  return { ingest, catalogCount, imagesUpdated, message };
+}
+
+/** Impex 配额约 2 次/30min：优先填满 Catalog 可视化缺口 */
+function pickLiveImpexDomains(
+  state: AppState,
+): Array<"catalog" | "orders" | "sales" | "fees"> {
+  if (state.catalog.length === 0) return ["catalog"];
+  const out: Array<"catalog" | "orders" | "sales" | "fees"> = [];
+  if (state.salesFacts.length === 0) out.push("sales");
+  if (state.feeSnapshots.length === 0 && out.length < 2) out.push("fees");
+  if (out.length === 0) {
+    // 都已有数据：轮换刷新 sales + fees（比反复 catalog 更利于经营视图）
+    out.push("sales", "fees");
+  } else if (out.length === 1 && state.orders.length === 0) {
+    out.push("orders");
+  }
+  return out.slice(0, 2);
+}
+
+function domainCount(
+  state: AppState,
+  domain: "catalog" | "orders" | "sales" | "fees" | "stock",
+): number {
+  switch (domain) {
+    case "catalog":
+      return state.catalog.length;
+    case "orders":
+      return state.orders.length;
+    case "sales":
+      return state.salesFacts.length;
+    case "fees":
+      return state.feeSnapshots.length;
+    case "stock":
+      return state.stock.length;
+  }
 }

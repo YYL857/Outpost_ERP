@@ -160,7 +160,7 @@ export function draftMapping(link) {
     return {
       syncDomain: "ads",
       outpostPrimary: "广告管理",
-      outpostRefs: [],
+      outpostRefs: ["Catalog（投产比）"],
       wave: 2,
     };
   }

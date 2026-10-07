@@ -4,23 +4,9 @@ import type { AppState } from "../../common/types.js";
 import { saveState } from "../../data/store.js";
 import { createNoonClient } from "../../platforms/noon/index.js";
 import type { NoonWebhookEnvelope } from "../../platforms/noon/types.js";
-import {
-  importPortalContent,
-  runPortalSessionFetch,
-} from "../../platforms/noon/portal/import-service.js";
+import { importPortalContent } from "../../platforms/noon/portal/import-service.js";
 import { runAutoIngest } from "../../platforms/noon/portal/auto-ingest.js";
 import { runAutoSync } from "../../platforms/noon/portal/auto-sync.js";
-import {
-  collectWithBrowser,
-  getBrowserSessionPaths,
-  getSessionFileStatus,
-  clearSavedCookieHeader,
-  pruneSavedSessionFiles,
-} from "../../platforms/noon/portal/browser-collector.js";
-import {
-  probeSessionUsability,
-  readLastSessionProbe,
-} from "../../platforms/noon/portal/session-probe.js";
 import {
   getNoonCredentialsPath,
   readNoonCredentialsFile,
@@ -50,7 +36,7 @@ const connectionSchema = z.object({
 });
 
 const importSchema = z.object({
-  domain: z.enum(["orders", "catalog", "stock", "sales", "fees"]),
+  domain: z.enum(["orders", "catalog", "stock", "sales", "fees", "ads"]),
   content: z.string().min(1),
   format: z.enum(["csv", "json", "auto"]).optional(),
   filename: z.string().optional(),
@@ -64,8 +50,6 @@ function maskSecret(value: string) {
 
 function publicNoon(state: AppState) {
   const noon = state.noon;
-  const session = getSessionFileStatus();
-  const lastProbe = readLastSessionProbe();
   const cred = readNoonCredentialsFile();
   const credentialsFilePath = getNoonCredentialsPath();
   return {
@@ -87,44 +71,23 @@ function publicNoon(state: AppState) {
       lastFetchAt: noon.portal.lastFetchAt,
       lastImportAt: noon.portal.lastImportAt,
       lastImportSummary: noon.portal.lastImportSummary,
-      // Cookie 不回传前端；只暴露本地文件状态与失效时间
-      hasSession: session.hasSession,
-      sessionCookieCount: session.cookieCount,
-      sessionFilePath: session.cookieFilePath,
-      sessionMetaPath: session.metaFilePath,
-      sessionSavedAt: session.savedAt,
-      sessionExpiresAt: session.expiresAt,
-      sessionExpiresSource: session.expiresSource,
-      sessionRemainingMs: session.remainingMs,
-      sessionHealth: session.health,
-      sessionWarnBeforeMs: session.warnBeforeMs,
-      sessionUsable: lastProbe?.usable ?? (session.hasSession ? "unknown" : "missing"),
-      sessionProbeAt: lastProbe?.probedAt ?? null,
-      sessionProbeMessage: lastProbe?.message ?? null,
-      sessionProbeVerdict: lastProbe?.verdict ?? null,
     },
     platform: "NOON",
     acquisition: {
-      primary: noon.mode === "live" ? "partner-api" : "portal",
+      primary: noon.mode === "live" ? "partner-api" : "portal-imports",
       note:
         noon.mode === "live"
-          ? "Partner API（Service Account JWT + Impex 导出）；不依赖 Seller Lab Cookie"
-          : "浏览器登录态写入本地文件；业务拉取时服务端读文件，不经前端展示 Cookie",
+          ? "Partner API（Service Account JWT + Impex 导出）"
+          : "portal-imports / 手工 CSV 入库；广告等无 Impex 域可用影刀投递",
     },
     integrationSlots: {
       portalParsers: "apps/api/src/platforms/noon/portal/parsers.ts",
       portalImport: "POST /api/noon/portal/import",
       portalAutoIngest: "POST /api/noon/portal/auto-ingest",
       portalAutoSync: "POST /api/noon/portal/auto-sync",
-      portalSession: "POST /api/noon/portal/fetch",
-      browserLogin: "POST /api/noon/portal/browser-login",
-      sessionProbe: "POST /api/noon/portal/session-probe",
-      browserCollector: "apps/api/src/platforms/noon/portal/browser-collector.ts",
-      sopRunner: "apps/api/src/platforms/noon/portal/sop-runner.ts",
       liveClient: "apps/api/src/platforms/noon/live-client.ts",
       impexClient: "apps/api/src/platforms/noon/impex-client.ts",
       credentialsEnv: "OUTPOST_NOON_CREDENTIALS_FILE",
-      sessionFile: session.cookieFilePath,
       inbox: "apps/api/src/modules/sync/inbox.ts",
     },
     portalCache: {
@@ -133,6 +96,7 @@ function publicNoon(state: AppState) {
       stock: state.portalCache.stock.length,
       sales: state.portalCache.sales?.length ?? 0,
       fees: state.portalCache.fees?.length ?? 0,
+      ads: state.portalCache.ads?.length ?? 0,
       updatedAt: state.portalCache.updatedAt,
     },
   };
@@ -176,7 +140,7 @@ export function createNoonRouter(getState: () => AppState) {
         domain: "orders",
         noonSource: live
           ? "Impex noon_noonoms_ordersexport"
-          : "Orders（SOP/会话）",
+          : "Orders CSV / portal-imports",
         count: state.orders.length,
         primaryPage: "销量统计 / 同步健康",
         refs: ["Best Sell", "财务报表"],
@@ -186,32 +150,33 @@ export function createNoonRouter(getState: () => AppState) {
       {
         domain: "sales",
         noonSource: live
-          ? "Impex productviewsandsalesdata（待接线）"
-          : "Sales export",
+          ? "Impex noon_catalog_reports_productviewsandsalesdata"
+          : "Sales export / 影刀 inbox 兜底",
         count: state.salesFacts.length,
         primaryPage: "销量统计",
         refs: ["Catalog 7日销量"],
-        mapped: !live,
+        mapped: true,
         wave: 1,
       },
       {
         domain: "fees",
         noonSource: live
-          ? "Impex transactionviewreport（待接线）"
-          : "Transaction View",
+          ? "Impex noon_financeweb_transactionviewreportonitemlevel"
+          : "Transaction View / 影刀 inbox 兜底",
         count: state.feeSnapshots.length,
         primaryPage: "财务报表",
         refs: ["Catalog 毛利列"],
-        mapped: !live,
+        mapped: true,
         wave: 1,
       },
       {
         domain: "ads",
-        noonSource: "Ads（待探测确认）",
-        count: 0,
+        noonSource:
+          "无官方 Impex · 影刀 Ad Manager Export all → portal-imports CSV",
+        count: state.adsFacts.length,
         primaryPage: "广告管理",
-        refs: [],
-        mapped: false,
+        refs: ["Catalog 投产比"],
+        mapped: true,
         wave: 2,
       },
       {
@@ -257,7 +222,7 @@ export function createNoonRouter(getState: () => AppState) {
         ordersUrl: next.portal?.ordersUrl ?? prev.portal.ordersUrl,
         catalogUrl: next.portal?.catalogUrl ?? prev.portal.catalogUrl,
         stockUrl: next.portal?.stockUrl ?? prev.portal.stockUrl,
-        // Cookie 只存本地文件，不再接受前端写入
+        // Cookie 字段已废弃，保持空字符串兼容旧 state
         cookie: "",
         lastFetchAt: prev.portal.lastFetchAt,
         lastImportAt: prev.portal.lastImportAt,
@@ -337,16 +302,14 @@ export function createNoonRouter(getState: () => AppState) {
   });
 
   /**
-   * 全自动同步：SOP 导出（需登录态）→ portal-imports 入库 → Catalog 拼装
-   * body.skipSop=true 时仅扫目录
+   * 全自动同步：live → Partner API Impex；portal → 扫描 portal-imports 入库
+   * body.skipSop / skipProbe 已废弃，忽略
    */
   router.post("/portal/auto-sync", async (req, res) => {
     const state = getState();
     try {
-      const skipSop = Boolean(req.body?.skipSop);
       const forceIngest = Boolean(req.body?.forceIngest);
-      const skipProbe = Boolean(req.body?.skipProbe);
-      const result = await runAutoSync(state, { skipSop, forceIngest, skipProbe });
+      const result = await runAutoSync(state, { forceIngest });
       res.json({
         data: result,
         message: result.message,
@@ -363,139 +326,6 @@ export function createNoonRouter(getState: () => AppState) {
     }
   });
 
-  /** Cookie + URL 会话拉取 */
-  router.post("/portal/fetch", async (_req, res) => {
-    const state = getState();
-    try {
-      const result = await runPortalSessionFetch(state);
-      res.json({
-        data: {
-          orders: result.orders.length,
-          catalog: result.catalog.length,
-          stock: result.stock.length,
-          warnings: result.warnings,
-          summary: result.summary,
-        },
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      pushAlert(state, {
-        level: "danger",
-        title: "门户会话拉取失败",
-        detail: message,
-      });
-      saveState(state);
-      res.status(400).json({ error: message });
-    }
-  });
-
-  /**
-   * 打开本机专用浏览器 → 登录 NOON → 进入 Seller Lab 后自动写入本地登录态
-   * （D:\outpost-data\noon-session\）；关窗仅收尾。不回传明文 Cookie 给前端。
-   */
-  router.post("/portal/browser-login", async (_req, res) => {
-    const state = getState();
-    try {
-      const result = await collectWithBrowser({
-        portalUrl: state.noon.portal.portalUrl || state.noon.baseUrl,
-      });
-      // 状态里不再保存 Cookie 明文
-      state.noon.portal.cookie = "";
-      state.noon.lastValidatedAt = new Date().toISOString();
-      state.noon.lastError = null;
-      saveState(state);
-      res.json({
-        data: {
-          cookieCount: result.cookieCount,
-          finalUrl: result.finalUrl,
-          userDataDir: result.userDataDir,
-          storageStatePath: result.storageStatePath,
-          cookieFilePath: result.cookieFilePath,
-          reusedExistingSession: result.reusedExistingSession,
-          expiresAt: result.expiresAt,
-          expiresSource: result.expiresSource,
-          session: getSessionFileStatus(),
-          paths: getBrowserSessionPaths(),
-        },
-        message: result.message,
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      pushAlert(state, {
-        level: "danger",
-        title: "浏览器登录态获取失败",
-        detail: message,
-      });
-      saveState(state);
-      res.status(400).json({ error: message });
-    }
-  });
-
-  /** 清除本地登录态文件（需重新浏览器登录） */
-  router.post("/portal/browser-logout", (_req, res) => {
-    clearSavedCookieHeader();
-    const state = getState();
-    state.noon.portal.cookie = "";
-    saveState(state);
-    res.json({
-      data: getSessionFileStatus(),
-      message: "已清除本地登录态文件",
-    });
-  });
-
-  /** 清洗已保存会话：去掉第三方/短效无关 Cookie 并重算失效时间 */
-  router.post("/portal/session-prune", (_req, res) => {
-    try {
-      const meta = pruneSavedSessionFiles();
-      if (!meta) {
-        res.status(400).json({ error: "没有可清洗的本地登录态" });
-        return;
-      }
-      res.json({
-        data: getSessionFileStatus(),
-        message: `已清洗登录态：保留 ${meta.cookieCount} 条 NOON Cookie，失效时间 ${meta.expiresAt ?? "未知"}`,
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      res.status(400).json({ error: message });
-    }
-  });
-
-  router.get("/portal/session-status", (_req, res) => {
-    const session = getSessionFileStatus();
-    const lastProbe = readLastSessionProbe();
-    res.json({
-      data: {
-        ...session,
-        sessionUsable:
-          lastProbe?.usable ?? (session.hasSession ? "unknown" : "missing"),
-        sessionProbeAt: lastProbe?.probedAt ?? null,
-        sessionProbeMessage: lastProbe?.message ?? null,
-        sessionProbeVerdict: lastProbe?.verdict ?? null,
-      },
-    });
-  });
-
-  /**
-   * 可用性探针：Playwright + storage-state 打开后台，判定 ok/blocked/expired。
-   * 有文件 ≠ 可用；同步前应先探针。
-   */
-  router.post("/portal/session-probe", async (_req, res) => {
-    try {
-      const probe = await probeSessionUsability();
-      res.json({
-        data: {
-          probe,
-          session: getSessionFileStatus(),
-        },
-        message: probe.message,
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      res.status(400).json({ error: message });
-    }
-  });
-
   router.get("/portal/cache", (_req, res) => {
     const state = getState();
     res.json({
@@ -506,6 +336,7 @@ export function createNoonRouter(getState: () => AppState) {
           stock: state.portalCache.stock.length,
           sales: state.portalCache.sales?.length ?? 0,
           fees: state.portalCache.fees?.length ?? 0,
+          ads: state.portalCache.ads?.length ?? 0,
         },
         updatedAt: state.portalCache.updatedAt,
         lastImportAt: state.noon.portal.lastImportAt,
@@ -517,6 +348,7 @@ export function createNoonRouter(getState: () => AppState) {
           stock: state.portalCache.stock.slice(0, 3),
           sales: (state.portalCache.sales ?? []).slice(0, 3),
           fees: (state.portalCache.fees ?? []).slice(0, 3),
+          ads: (state.portalCache.ads ?? []).slice(0, 3),
         },
       },
     });
@@ -551,6 +383,12 @@ export function createNoonRouter(getState: () => AppState) {
     if (domain === "fees") {
       res.type("text/csv").send(
         "partner_sku,commission_rate,outbound_fee,tax_amount,updated_at\nN1-SAMPLE,0.15,7,2.6,2026-01-02T10:00:00Z\n",
+      );
+      return;
+    }
+    if (domain === "ads") {
+      res.type("text/csv").send(
+        "sku,campaign_name,from_date,to_date,spend,revenue,orders,views,clicks\nN1-SAMPLE,PLA Auto,2026-09-01,2026-09-07,50,200,4,1000,80\n",
       );
       return;
     }

@@ -1,4 +1,5 @@
 import { NavLink } from "react-router-dom";
+import outpostMark from "../assets/outpost-mark.svg";
 import { MODULES, type AppModule } from "../modules";
 
 const groups = [...new Set(MODULES.map((m) => m.group))];
@@ -12,10 +13,17 @@ export function Sidebar({ onOpen }: Props) {
     <aside className="sidebar">
       <div className="brand">
         <div className="brand-mark">
-          <span className="brand-logo" aria-hidden />
-          <span className="brand-name">前哨</span>
+          <img
+            className="brand-logo"
+            src={outpostMark}
+            alt=""
+            width={30}
+            height={30}
+            aria-hidden
+          />
+          <span className="brand-name">慧运营</span>
         </div>
-        <div className="brand-sub">Outpost · 跨境经营台</div>
+        <div className="brand-sub">跨境经营台</div>
       </div>
 
       {groups.map((group) => (

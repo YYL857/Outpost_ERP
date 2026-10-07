@@ -9,6 +9,7 @@ loadDotenv({ path: resolve(apiRoot, ".env") });
 
 export type AppEnv = {
   port: number;
+  host: string;
   dataDriver: "json" | "postgres";
   databaseUrl: string;
   /** JSON 状态文件目录；默认 apps/api/.data，本地推荐 D:\\outpost-data\\json */
@@ -41,6 +42,7 @@ export function loadEnv(): AppEnv {
   const country = (process.env.NOON_COUNTRY_CODE ?? "sa").toLowerCase();
   return {
     port: Number(process.env.PORT ?? 8787),
+    host: (process.env.HOST ?? "0.0.0.0").trim() || "0.0.0.0",
     dataDriver: (process.env.DATA_DRIVER as "json" | "postgres") ?? "json",
     databaseUrl: process.env.DATABASE_URL ?? "",
     dataDir: resolveDataDir(),

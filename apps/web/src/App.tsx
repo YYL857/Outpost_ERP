@@ -13,7 +13,9 @@ import { ListingPage } from "./pages/ListingPage";
 import { SalesPage } from "./pages/SalesPage";
 import { BestSellPage } from "./pages/BestSellPage";
 import { FinancePage } from "./pages/FinancePage";
-import { SessionExpiryGuard } from "./components/SessionExpiryGuard";
+import { MarketIntelPage } from "./pages/MarketIntelPage";
+import { DailyBriefPage } from "./pages/DailyBriefPage";
+import { SchedulersPage } from "./pages/SchedulersPage";
 
 function syncTone(status?: string): "ok" | "warn" | "danger" | "idle" {
   if (status === "failed") return "danger";
@@ -25,12 +27,15 @@ function syncTone(status?: string): "ok" | "warn" | "danger" | "idle" {
 const READY_PAGES: Partial<Record<ModuleKey, React.ReactNode>> = {
   home: <HomePage />,
   "sync-health": <SyncHealthPage />,
+  schedulers: <SchedulersPage />,
   noon: <NoonPage />,
   catalog: <CatalogPage />,
   listing: <ListingPage />,
   sales: <SalesPage />,
   "best-sell": <BestSellPage />,
   finance: <FinancePage />,
+  selection: <MarketIntelPage />,
+  "daily-brief": <DailyBriefPage />,
 };
 
 export default function App() {
@@ -39,7 +44,6 @@ export default function App() {
   const home = MODULES[0];
   const [tabs, setTabs] = useState<AppModule[]>([home]);
   const [overall, setOverall] = useState<string>("idle");
-  const [sessionHealth, setSessionHealth] = useState<string>("missing");
   const [shops, setShops] = useState<ShopInfo[]>([]);
   const [activeShopId, setActiveShopId] = useState("");
   const [shopBusy, setShopBusy] = useState(false);
@@ -60,10 +64,6 @@ export default function App() {
         .getSyncHealth()
         .then((res) => setOverall(res.data.overall))
         .catch(() => setOverall("failed"));
-      api
-        .getPortalSessionStatus()
-        .then((res) => setSessionHealth(res.data.health))
-        .catch(() => setSessionHealth("missing"));
     };
     tick();
     const id = setInterval(tick, 5000);
@@ -139,15 +139,6 @@ export default function App() {
                     : "同步未知",
             tone: syncTone(overall),
           }}
-          sessionBadge={
-            sessionHealth === "expired"
-              ? { label: "登录态已过期", tone: "danger" }
-              : sessionHealth === "warning"
-                ? { label: "登录态将过期", tone: "warn" }
-                : sessionHealth === "ok"
-                  ? { label: "登录态有效", tone: "ok" }
-                  : { label: "未登录 NOON", tone: "idle" }
-          }
         />
         <main className="content">
           <Routes>
@@ -169,7 +160,6 @@ export default function App() {
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </main>
-        <SessionExpiryGuard />
       </div>
     </div>
   );

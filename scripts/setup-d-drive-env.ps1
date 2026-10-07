@@ -9,7 +9,7 @@ $NodeHome = "D:\devtools\nodejs"
 $PnpmHome = "D:\devtools\pnpm"
 $PnpmStore = "D:\devtools\pnpm\store"
 $DataRoot = "D:\outpost-data"
-$RepoRoot = "D:\outpost-erp"
+$RepoRoot = if (Test-Path "D:\Outpost_ERP\package.json") { "D:\Outpost_ERP" } elseif (Test-Path "D:\outpost-erp\package.json") { "D:\outpost-erp" } else { "D:\Outpost_ERP" }
 
 Write-Host "== Outpost D-drive env setup ==" -ForegroundColor Cyan
 

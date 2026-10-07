@@ -7,7 +7,6 @@ type Props = {
   onSelect: (mod: AppModule) => void;
   onClose: (key: string) => void;
   syncBadge?: { label: string; tone: "ok" | "warn" | "danger" | "idle" };
-  sessionBadge?: { label: string; tone: "ok" | "warn" | "danger" | "idle" };
   shops?: ShopInfo[];
   activeShopId?: string;
   onShopChange?: (shopId: string) => void;
@@ -20,7 +19,6 @@ export function Topbar({
   onSelect,
   onClose,
   syncBadge,
-  sessionBadge,
   shops,
   activeShopId,
   onShopChange,
@@ -75,9 +73,6 @@ export function Topbar({
               ))}
             </select>
           </label>
-        )}
-        {sessionBadge && (
-          <span className={`badge ${sessionBadge.tone}`}>{sessionBadge.label}</span>
         )}
         {syncBadge && (
           <span className={`badge ${syncBadge.tone}`}>{syncBadge.label}</span>

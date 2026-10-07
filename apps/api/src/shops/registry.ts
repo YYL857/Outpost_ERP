@@ -73,20 +73,23 @@ export function loadRegistry(): ShopsRegistry {
   }
   const raw = JSON.parse(readFileSync(REGISTRY_PATH, "utf8")) as ShopsRegistry;
   const byId = new Map((raw.shops ?? []).map((s) => [s.id, s]));
-  // 合并默认店（补齐新店 / 纠正凭证路径）
+  // 仅补齐默认店；已存在的记录保留用户录入的凭证路径 / 名称
   for (const def of DEFAULT_SHOPS) {
     const prev = byId.get(def.id);
+    if (!prev) {
+      byId.set(def.id, { ...def });
+      continue;
+    }
     byId.set(def.id, {
       ...def,
       ...prev,
       id: def.id,
       projectCode: def.projectCode,
-      credentialsFile: def.credentialsFile,
-      rootDir: def.rootDir,
-      // 默认名以代码为准，避免历史乱码残留
-      name: def.name,
-      noonMode: prev?.noonMode ?? def.noonMode,
-      countryCode: prev?.countryCode ?? def.countryCode,
+      credentialsFile: prev.credentialsFile?.trim() || def.credentialsFile,
+      rootDir: prev.rootDir?.trim() || def.rootDir,
+      name: prev.name?.trim() || def.name,
+      noonMode: prev.noonMode ?? def.noonMode,
+      countryCode: prev.countryCode ?? def.countryCode,
     });
   }
   const shops = [...byId.values()];
@@ -202,4 +205,79 @@ export function bootstrapShops(): { registry: ShopsRegistry; active: ShopRecord 
     `[shops] active=${active.id} data=${process.env.OUTPOST_DATA_DIR} cred=${process.env.OUTPOST_NOON_CREDENTIALS_FILE}`,
   );
   return { registry, active };
+}
+
+export type RegisterShopInput = {
+  /** Service Account JSON 绝对路径（本机盘符路径） */
+  credentialsFile: string;
+  /** 展示名；默认 Shop {project_code} */
+  name?: string;
+  countryCode?: ShopRecord["countryCode"];
+  noonMode?: ShopRecord["noonMode"];
+};
+
+/**
+ * 从凭证 JSON 路径录入/更新店铺：
+ * 读 key_id / private_key / project_code → upsert shops-registry.json → 建数据目录。
+ * 不复制私钥内容进注册表，只存文件路径。
+ */
+export function registerShopFromCredentials(input: RegisterShopInput): {
+  shop: ShopRecord;
+  created: boolean;
+  updated: boolean;
+  registry: ShopsRegistry;
+} {
+  const abs = resolve(input.credentialsFile.trim());
+  if (!existsSync(abs)) {
+    throw new Error(`凭证文件不存在: ${abs}`);
+  }
+
+  let raw: { key_id?: string; private_key?: string; project_code?: string };
+  try {
+    raw = JSON.parse(readFileSync(abs, "utf8")) as typeof raw;
+  } catch {
+    throw new Error(`无法解析 JSON 凭证文件: ${abs}`);
+  }
+  const keyId = String(raw.key_id ?? "").trim();
+  const privateKey = String(raw.private_key ?? "").trim();
+  const projectCode = String(raw.project_code ?? "").trim();
+  if (!keyId || !privateKey || !projectCode) {
+    throw new Error(
+      "凭证 JSON 缺少必填字段 key_id / private_key / project_code（请使用 NOON Access App 下载的 Service Account）",
+    );
+  }
+  if (!/^PRJ\d+$/i.test(projectCode)) {
+    throw new Error(`project_code 格式异常: ${projectCode}`);
+  }
+
+  const registry = loadRegistry();
+  const existing = registry.shops.find(
+    (s) => s.id === projectCode || s.projectCode === projectCode,
+  );
+  const shop: ShopRecord = {
+    id: projectCode,
+    projectCode,
+    name: input.name?.trim() || existing?.name || `Shop ${projectCode}`,
+    credentialsFile: abs,
+    rootDir: existing?.rootDir || join(OUTPOST_ROOT, "shops", projectCode),
+    countryCode: input.countryCode ?? existing?.countryCode ?? "sa",
+    noonMode: input.noonMode ?? existing?.noonMode ?? "live",
+  };
+
+  ensureShopDirs(shop);
+
+  if (existing) {
+    const idx = registry.shops.findIndex((s) => s.id === existing.id);
+    registry.shops[idx] = shop;
+  } else {
+    registry.shops.push(shop);
+  }
+  saveRegistry(registry);
+
+  return {
+    shop,
+    created: !existing,
+    updated: Boolean(existing),
+    registry,
+  };
 }

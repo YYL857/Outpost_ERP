@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>Outpost Capture</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        width: 280px;
+        margin: 12px;
+        font-size: 13px;
+      }
+      button {
+        width: 100%;
+        padding: 8px;
+        cursor: pointer;
+      }
+      #msg {
+        margin-top: 8px;
+        color: #444;
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <p>在 Noon 沙特类目页点击采集，数据 POST 到本机慧运营。</p>
+    <button id="capture">采集当前页 → Outpost</button>
+    <div id="msg"></div>
+    <script src="popup.js"></script>
+  </body>
+</html>

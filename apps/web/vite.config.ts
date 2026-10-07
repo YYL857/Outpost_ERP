@@ -4,7 +4,8 @@ import react from "@vitejs/plugin-react";
 export default defineConfig({
   plugins: [react()],
   server: {
-    host: "127.0.0.1",
+    // 0.0.0.0：本机 + 同局域网其他设备可访问（用本机局域网 IP 打开）
+    host: "0.0.0.0",
     port: 5173,
     proxy: {
       "/api": {

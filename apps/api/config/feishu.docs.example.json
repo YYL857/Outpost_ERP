@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "docs": [
+    {
+      "id": "product",
+      "label": "产品表",
+      "kind": "spreadsheet",
+      "url": "https://example.feishu.cn/sheets/REPLACE_PRODUCT_TOKEN",
+      "spreadsheetToken": "REPLACE_PRODUCT_TOKEN",
+      "sheetTitles": ["产品", "产品表每日信息", "到仓成本", "查找代码表"],
+      "targetDomain": "local_cost_dims",
+      "enabled": true
+    },
+    {
+      "id": "daily",
+      "label": "日报",
+      "kind": "spreadsheet",
+      "spreadsheetToken": "REPLACE_DAILY_TOKEN",
+      "targetDomain": "ops_tags",
+      "enabled": true
+    },
+    {
+      "id": "packing",
+      "label": "装箱表",
+      "kind": "spreadsheet",
+      "spreadsheetToken": "REPLACE_PACKING_TOKEN",
+      "sheetTitles": ["箱表", "装箱明细", "SKU信息"],
+      "targetDomain": "packing",
+      "enabled": true
+    },
+    {
+      "id": "accounts",
+      "label": "账目表",
+      "kind": "spreadsheet",
+      "spreadsheetToken": "REPLACE_ACCOUNTS_TOKEN",
+      "sheetTitles": ["产品采购", "公司入账", "公司开支-杂项"],
+      "targetDomain": "purchase_cash",
+      "enabled": true
+    }
+  ]
+}

@@ -1,8 +1,21 @@
+/** 海运货物类型：插电 / 内置电 / 普货 */
+export type CargoType = "plug" | "builtin" | "general";
+
 export type ShippingConfig = {
+  /** @deprecated 财务页遗留；Catalog 头程用 airFreightRmbPerKg */
   airFreightAedPerKg: number;
   airLeadDays: number;
+  /** @deprecated 财务页遗留；Catalog 海运用 seaFreightRmbPerCbm* */
   seaFreightAedPerCbm: number;
   seaLeadDays: number;
+  /** 空运头程 RMB/kg；计费重 = MAX(实重, 体积重) */
+  airFreightRmbPerKg: number;
+  /** 海运插电 RMB/cbm */
+  seaFreightRmbPerCbmPlug: number;
+  /** 海运内置电 RMB/cbm */
+  seaFreightRmbPerCbmBuiltin: number;
+  /** 海运普货 RMB/cbm */
+  seaFreightRmbPerCbmGeneral: number;
   buybackRate: number;
   volumetricDivisor: number;
   updatedAt: string;
@@ -102,6 +115,19 @@ export type PortalCache = {
     tax_amount: number;
     updated_at: string;
   }>;
+  /** Noon Ads Campaign Overview SKU 页 */
+  ads: Array<{
+    partner_sku: string;
+    campaign: string;
+    from_date: string;
+    to_date: string;
+    spend: number;
+    revenue: number;
+    orders: number;
+    views: number;
+    clicks: number;
+    updated_at: string;
+  }>;
   updatedAt: string | null;
 };
 
@@ -111,6 +137,7 @@ export type SyncCursor = {
   stockSince: string | null;
   salesSince: string | null;
   feesSince: string | null;
+  adsSince: string | null;
 };
 
 export type SyncJobStatus = "idle" | "running" | "success" | "warning" | "failed";
@@ -121,6 +148,7 @@ export type SyncDomain =
   | "stock"
   | "sales"
   | "fees"
+  | "ads"
   | "pricing"
   | "store"
   | "reconcile";
@@ -219,13 +247,56 @@ export type FeeSnapshot = {
   updatedAt: string;
 };
 
+/**
+ * My Catalog Estimated Fees（FBN/FBP）估费补缺。
+ * 仅供 Catalog assemble 在 feeSnapshots 缺数时使用；财务报表不读此表。
+ */
+export type FeeEstimate = {
+  partnerSku: string;
+  /** 0–1；仅总额时可为 0 */
+  commissionRate: number;
+  outboundFee: number;
+  /** 估费合计（FBN 优先）；无法拆分时写入此项 */
+  estimatedFeeTotal: number;
+  fulfillment: "fbn" | "fbp" | "unknown";
+  updatedAt: string;
+  source?: string;
+};
+
+/**
+ * Noon Ads Campaign Overview（SKU sheet）事实。
+ * 主键：partnerSku + campaign + fromDate + toDate（幂等 upsert，跨活动汇总时再 Σ）。
+ */
+export type AdsFact = {
+  partnerSku: string;
+  /** 活动名；空表示未拆活动 */
+  campaign: string;
+  /** YYYY-MM-DD 报表区间起 */
+  fromDate: string;
+  /** YYYY-MM-DD 报表区间止 */
+  toDate: string;
+  spend: number;
+  revenue: number;
+  orders: number;
+  views: number;
+  clicks: number;
+  updatedAt: string;
+};
+
 /** 本地费用配置（头程/采购等，对应竞品「费用配置」） */
 export type SkuLocalCost = {
   partnerSku: string;
+  /** 飞书 landed−采购差；Catalog 毛利改用费率表头程，此字段仅追溯 */
   headhaul: number;
   purchaseCost: number;
   preferAir: boolean;
+  /** 海运分档；缺省 general */
+  cargoType?: CargoType;
   updatedAt: string;
+  /** 来源追溯，如 feishu:product_daily+landed */
+  source?: string;
+  /** 规范化 runId，便于对回 feishu-normalized */
+  normalizeRunId?: string;
 };
 
 /** 本地尺寸重量（对应竞品「导入尺寸重量」） */
@@ -236,6 +307,8 @@ export type SkuDims = {
   widthCm: number;
   heightCm: number;
   updatedAt: string;
+  source?: string;
+  normalizeRunId?: string;
 };
 
 /** 补货参数 */
@@ -279,6 +352,9 @@ export type AppState = {
   stock: StockItem[];
   salesFacts: SalesFact[];
   feeSnapshots: FeeSnapshot[];
+  /** Catalog 估费补缺；不参与财务汇总 */
+  feeEstimates: FeeEstimate[];
+  adsFacts: AdsFact[];
   skuLocalCosts: SkuLocalCost[];
   skuDims: SkuDims[];
   replenishConfigs: ReplenishConfig[];

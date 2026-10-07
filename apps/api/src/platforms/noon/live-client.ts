@@ -1,6 +1,6 @@
 /**
  * 真实 NOON Partner API 客户端（Impex 导出为主路径）。
- * 注意：账号通常有「30 分钟内 2 次」导出限额，故默认只拉 catalog=live，
+ * 注意：Noon 约「30 分钟内 20 次」导出限额，故默认只拉 catalog=live，
  * 库存走 FBN ledger；完整同步请错开或依赖 poller 分域轮询。
  * 凭证：OUTPOST_NOON_CREDENTIALS_FILE
  */
@@ -17,27 +17,83 @@ import {
 } from "./http.js";
 import {
   parseCatalogContent,
+  parseCatalogEstimatedFees,
+  parseFeesContent,
+  parseFbnDimsContent,
   parseOrdersContent,
+  parseSalesContent,
   parseStockContent,
   parseStockHintsFromCatalogContent,
+  type CatalogFeeEstimateDto,
+  type FbnDimsDto,
 } from "./portal/parsers.js";
 import type {
   NoonCatalogDto,
   NoonClient,
+  NoonFeeDto,
   NoonOrderDto,
+  NoonSalesDto,
   NoonStockDto,
 } from "./types.js";
+
+/** 进程内复用最近一次 orders 导出，避免 fetchOrder 一单一整表 */
+type OrdersExportCache = {
+  fetchedAt: number;
+  rangeKey: string;
+  rows: NoonOrderDto[];
+};
+let ordersExportCache: OrdersExportCache | null = null;
+/** 同 range 并发共用一次 create，防止绕过缓存打光 Noon 配额 */
+let ordersExportInflight: {
+  rangeKey: string;
+  promise: Promise<NoonOrderDto[]>;
+} | null = null;
+
+function ordersCacheTtlMs(): number {
+  return Math.max(
+    60_000,
+    Number(process.env.OUTPOST_ORDERS_FETCH_CACHE_MS ?? 10 * 60 * 1000),
+  );
+}
+
+function cachedOrders(rangeKey: string): NoonOrderDto[] | null {
+  const ttl = ordersCacheTtlMs();
+  if (
+    ordersExportCache &&
+    ordersExportCache.rangeKey === rangeKey &&
+    Date.now() - ordersExportCache.fetchedAt < ttl
+  ) {
+    return ordersExportCache.rows;
+  }
+  return null;
+}
 
 export class LiveNoonClient implements NoonClient {
   readonly mode = "live" as const;
   /** 最近一次 catalog 导出顺带解析的库存提示（pullDomain 可 drain） */
   private stockHints: NoonStockDto[] = [];
+  /** Catalog Estimated Fees 补缺（不进 feeSnapshots） */
+  private feeEstimateHints: CatalogFeeEstimateDto[] = [];
+  /** FBN Inventory 尺寸补缺 */
+  private fbnDimsHints: FbnDimsDto[] = [];
 
   constructor(private readonly connection: NoonConnection) {}
 
   drainStockHints(): NoonStockDto[] {
     const rows = this.stockHints;
     this.stockHints = [];
+    return rows;
+  }
+
+  drainFeeEstimateHints(): CatalogFeeEstimateDto[] {
+    const rows = this.feeEstimateHints;
+    this.feeEstimateHints = [];
+    return rows;
+  }
+
+  drainFbnDimsHints(): FbnDimsDto[] {
+    const rows = this.fbnDimsHints;
+    this.fbnDimsHints = [];
     return rows;
   }
 
@@ -75,12 +131,32 @@ export class LiveNoonClient implements NoonClient {
 
   async fetchOrdersSince(since: string | null): Promise<NoonOrderDto[]> {
     const range = orderDateRange(since);
-    const { csv } = await runImpexExportCsv(
-      this.connection,
-      IMPEX_EXPORT_CATEGORIES.orders,
-      range,
-    );
-    return parseOrdersContent(csv, "csv");
+    const rangeKey = `${range.from_date}|${range.to_date}`;
+    const hit = cachedOrders(rangeKey);
+    if (hit) return hit;
+    if (ordersExportInflight?.rangeKey === rangeKey) {
+      return ordersExportInflight.promise;
+    }
+    const promise = (async () => {
+      try {
+        const again = cachedOrders(rangeKey);
+        if (again) return again;
+        const { csv } = await runImpexExportCsv(
+          this.connection,
+          IMPEX_EXPORT_CATEGORIES.orders,
+          range,
+        );
+        const rows = parseOrdersContent(csv, "csv");
+        ordersExportCache = { fetchedAt: Date.now(), rangeKey, rows };
+        return rows;
+      } finally {
+        if (ordersExportInflight?.rangeKey === rangeKey) {
+          ordersExportInflight = null;
+        }
+      }
+    })();
+    ordersExportInflight = { rangeKey, promise };
+    return promise;
   }
 
   async fetchOrder(orderNr: string): Promise<NoonOrderDto | null> {
@@ -97,6 +173,7 @@ export class LiveNoonClient implements NoonClient {
     const statuses = catalogStatusesFromEnv();
     const merged = new Map<string, NoonCatalogDto>();
     const hintMap = new Map<string, NoonStockDto>();
+    const feeMap = new Map<string, CatalogFeeEstimateDto>();
 
     for (const noon_status of statuses) {
       const { csv } = await runImpexExportCsv(
@@ -111,15 +188,54 @@ export class LiveNoonClient implements NoonClient {
         const key = `${hint.partner_sku}|${hint.warehouse_code}|${hint.fulfillment}`;
         hintMap.set(key, hint);
       }
+      for (const est of parseCatalogEstimatedFees(csv, "csv")) {
+        const prev = feeMap.get(est.partner_sku);
+        if (prev?.fulfillment === "fbn" && est.fulfillment === "fbp") continue;
+        feeMap.set(est.partner_sku, est);
+      }
     }
 
     this.stockHints = [...hintMap.values()];
+    this.feeEstimateHints = [...feeMap.values()];
     return [...merged.values()];
+  }
+
+  /** Impex product views & sales → salesFacts（Catalog GMV 列） */
+  async fetchSalesSince(since: string | null): Promise<NoonSalesDto[]> {
+    const range = orderDateRange(since);
+    const country = (this.connection.countryCode || "sa").toLowerCase();
+    const lang = (process.env.OUTPOST_NOON_LANG || "en").trim().toLowerCase();
+    const { csv } = await runImpexExportCsv(
+      this.connection,
+      IMPEX_EXPORT_CATEGORIES.sales,
+      { ...range, country, lang },
+    );
+    return parseSalesContent(csv, "csv");
+  }
+
+  /** Impex transaction view item-level → feeSnapshots（Catalog 费用/毛利） */
+  async fetchFeesSince(since: string | null): Promise<NoonFeeDto[]> {
+    const range = orderDateRange(since);
+    const country = (this.connection.countryCode || "sa").toLowerCase();
+    const lang = (process.env.OUTPOST_NOON_LANG || "en").trim().toLowerCase();
+    // fees 实测可无 lang；一并附上以免个别账号校验变严
+    const { csv } = await runImpexExportCsv(
+      this.connection,
+      IMPEX_EXPORT_CATEGORIES.fees,
+      { ...range, country, lang },
+    );
+    return parseFeesContent(csv, "csv");
   }
 
   private async safeStockExport(category: string): Promise<NoonStockDto[]> {
     try {
       const { csv } = await runImpexExportCsv(this.connection, category, {});
+      const dims = parseFbnDimsContent(csv, "csv");
+      if (dims.length) {
+        const map = new Map(this.fbnDimsHints.map((d) => [d.partner_sku, d]));
+        for (const d of dims) map.set(d.partner_sku, d);
+        this.fbnDimsHints = [...map.values()];
+      }
       return parseStockContent(csv, "csv");
     } catch (err) {
       const msg =
@@ -130,7 +246,7 @@ export class LiveNoonClient implements NoonClient {
             : String(err);
       if (/export limit|rate.?limit|too many/i.test(msg)) {
         throw new Error(
-          `Impex 导出限额已用尽（通常 30 分钟 2 次）：${msg.slice(0, 180)}`,
+          `Impex 导出限额已用尽（Noon 约 30 分钟内 20 次）：${msg.slice(0, 180)}`,
         );
       }
       console.warn("[live-noon] FBN stock export skipped:", msg.slice(0, 200));

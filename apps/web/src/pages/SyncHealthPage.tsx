@@ -63,6 +63,20 @@ export function SyncHealthPage() {
     await refresh();
   }
 
+  async function clearAlerts() {
+    if (!window.confirm(`清空全部 ${alerts.length} 条告警？`)) return;
+    setBusy("clear-alerts");
+    setError("");
+    try {
+      await api.clearAlerts();
+      await refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "清空告警失败");
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function demoFail() {
     setBusy("demo");
     try {
@@ -149,7 +163,7 @@ export function SyncHealthPage() {
               <tr>
                 <th>域</th>
                 <th>本地条数</th>
-                <th>前哨主页面</th>
+                <th>慧运营主页面</th>
                 <th>最近成功</th>
               </tr>
             </thead>
@@ -294,7 +308,19 @@ export function SyncHealthPage() {
       </div>
 
       <div className="card">
-        <h3>告警列表</h3>
+        <h3 className="row" style={{ justifyContent: "space-between" }}>
+          <span>告警列表</span>
+          {alerts.length > 0 && (
+            <button
+              className="btn"
+              type="button"
+              disabled={busy === "clear-alerts"}
+              onClick={() => clearAlerts()}
+            >
+              {busy === "clear-alerts" ? "清空中…" : "清空全部"}
+            </button>
+          )}
+        </h3>
         <div style={{ display: "grid", gap: 10 }}>
           {alerts.length === 0 && <p className="muted">暂无告警</p>}
           {alerts.map((alert) => (

@@ -26,12 +26,48 @@ D:\outpost-erp\scripts\setup-d-drive-env.ps1
 
 首次若尚未安装 Node：从 [nodejs.org dist](https://nodejs.org/dist/) 下载 **win-x64 zip**，解压内容到 `D:\devtools\nodejs`，再跑上述脚本。
 
-## 启动
+## 启动（推荐：与 Cursor 解耦）
 
-重新打开终端后：
+日常请用后台独立进程，**关掉 / 重启 Cursor 也不会停服务**：
 
 ```powershell
-cd D:\outpost-erp
+Set-ExecutionPolicy -Scope Process Bypass
+D:\Outpost_ERP\scripts\start-services.ps1
+```
+
+| 脚本 | 作用 |
+|------|------|
+| `scripts\start-services.ps1` | 后台启动 API + Web（脱离终端 Job） |
+| `scripts\status-services.ps1` | 查看是否在跑 |
+| `scripts\stop-services.ps1` | 停止后台服务 |
+| `scripts\install-autostart.ps1` | **一键开机自启**（登录后约 45 秒自动拉起） |
+| `scripts\open-firewall.ps1` | 开放防火墙 5173/8787（需管理员，局域网访问用） |
+
+局域网其他设备：用本机 IP 打开 `http://<本机IP>:5173`（前端会经 Vite 代理访问本机 API）。  
+若打不开，**以管理员**运行 `scripts\open-firewall.ps1`。
+
+### 开机自启
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+D:\Outpost_ERP\scripts\install-autostart.ps1
+```
+
+- 查看：`install-autostart.ps1 -Status`
+- 取消：`install-autostart.ps1 -Uninstall`
+
+会注册计划任务 `OutpostERP-Services`（当前用户登录时启动，不依赖 Cursor）。
+
+日志：`D:\outpost-data\logs\`（`api-out.log` / `web-out.log` 等）
+
+若终端里已在跑 `pnpm dev`，先停掉再执行 `start-services.ps1`，避免端口占用。
+
+### 前台开发（会挂在当前终端）
+
+仅调试时用；关终端 / 关 Cursor 可能一起退出：
+
+```powershell
+cd D:\Outpost_ERP
 pnpm install
 pnpm dev
 ```

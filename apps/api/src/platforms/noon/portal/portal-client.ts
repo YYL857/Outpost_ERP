@@ -2,16 +2,16 @@ import type { NoonConnection, PortalCache } from "../../../common/types.js";
 import type {
   NoonCatalogDto,
   NoonClient,
+  NoonFeeDto,
   NoonOrderDto,
+  NoonSalesDto,
   NoonStockDto,
 } from "../types.js";
-import { readSavedCookieHeader } from "./browser-collector.js";
-import { fetchPortalBySession } from "./session-fetcher.js";
 
 /**
  * 门户模式客户端：
- * - 优先读 portalCache（文件导入 / 会话抓取写入）
- * - 若 cache 空且配置了 URL+本地登录态，则现场拉取
+ * - 读 portalCache（手工/影刀 CSV 导入写入）
+ * - 不再使用浏览器登录态或会话拉取
  */
 export class PortalNoonClient implements NoonClient {
   readonly mode = "portal" as const;
@@ -20,46 +20,38 @@ export class PortalNoonClient implements NoonClient {
     private readonly connection: NoonConnection,
     private readonly getCache: () => PortalCache,
     private readonly setCache: (cache: PortalCache) => void,
-  ) {}
+  ) {
+    void this.setCache;
+  }
 
   async validateCredentials() {
     if (!this.connection.enabled) {
       return { ok: false, message: "NOON 接入未启用" };
     }
-    const portal = this.connection.portal;
     const cache = this.getCache();
     const hasCache =
-      cache.orders.length + cache.catalog.length + cache.stock.length > 0;
+      cache.orders.length +
+        cache.catalog.length +
+        cache.stock.length +
+        (cache.sales?.length ?? 0) +
+        (cache.fees?.length ?? 0) +
+        (cache.ads?.length ?? 0) >
+      0;
     if (hasCache) {
       return {
         ok: true,
         message: `门户缓冲可用：订单 ${cache.orders.length} / 商品 ${cache.catalog.length} / 库存 ${cache.stock.length}`,
       };
     }
-    const hasSession = Boolean(readSavedCookieHeader() || portal.cookie);
-    if (
-      hasSession &&
-      (portal.ordersUrl || portal.catalogUrl || portal.stockUrl)
-    ) {
-      return {
-        ok: true,
-        message: "已检测到本地登录态与采集 URL，可执行「会话拉取」",
-      };
-    }
-    if (!hasSession) {
-      return {
-        ok: false,
-        message: "门户模式未就绪：请先「浏览器登录并保存登录态」",
-      };
-    }
     return {
       ok: false,
-      message: "已有登录态，请再配置订单/商品/库存数据 URL，或导入导出文件",
+      message:
+        "门户缓冲为空。请将导出 CSV 放入 portal-imports，或改用 live（Partner API）",
     };
   }
 
   async fetchOrdersSince(_since: string | null): Promise<NoonOrderDto[]> {
-    return (await this.ensureDomain("orders")) as NoonOrderDto[];
+    return this.requireDomain("orders") as NoonOrderDto[];
   }
 
   async fetchOrder(orderNr: string): Promise<NoonOrderDto | null> {
@@ -76,36 +68,35 @@ export class PortalNoonClient implements NoonClient {
   }
 
   async fetchStockSince(_since: string | null): Promise<NoonStockDto[]> {
-    return (await this.ensureDomain("stock")) as NoonStockDto[];
+    return this.requireDomain("stock") as NoonStockDto[];
   }
 
   async fetchCatalogSince(_since: string | null): Promise<NoonCatalogDto[]> {
-    return (await this.ensureDomain("catalog")) as NoonCatalogDto[];
+    return this.requireDomain("catalog") as NoonCatalogDto[];
   }
 
-  private async ensureDomain(domain: "orders" | "catalog" | "stock") {
+  async fetchSalesSince(_since: string | null): Promise<NoonSalesDto[]> {
+    const cache = this.getCache();
+    if ((cache.sales?.length ?? 0) > 0) return cache.sales;
+    throw new Error(
+      "门户缓冲无 sales 数据。请导入 Sales 导出，或改用 live Impex / 影刀 inbox 投递",
+    );
+  }
+
+  async fetchFeesSince(_since: string | null): Promise<NoonFeeDto[]> {
+    const cache = this.getCache();
+    if ((cache.fees?.length ?? 0) > 0) return cache.fees;
+    throw new Error(
+      "门户缓冲无 fees 数据。请导入 Transaction View，或改用 live Impex / 影刀 inbox 投递",
+    );
+  }
+
+  private requireDomain(domain: "orders" | "catalog" | "stock") {
     const cache = this.getCache();
     const current = cache[domain];
     if (current.length > 0) return current;
-
-    const portal = this.connection.portal;
-    if (!readSavedCookieHeader() && !portal.cookie) {
-      throw new Error(
-        `门户缓冲无 ${domain} 数据。请先「浏览器登录」或导入导出文件`,
-      );
-    }
-
-    const fetched = await fetchPortalBySession(portal);
-    const prev = this.getCache();
-    const next: PortalCache = {
-      orders: fetched.orders,
-      catalog: fetched.catalog,
-      stock: fetched.stock,
-      sales: prev.sales ?? [],
-      fees: prev.fees ?? [],
-      updatedAt: new Date().toISOString(),
-    };
-    this.setCache(next);
-    return next[domain];
+    throw new Error(
+      `门户缓冲无 ${domain} 数据。请将导出文件放入 portal-imports 或手工导入`,
+    );
   }
 }

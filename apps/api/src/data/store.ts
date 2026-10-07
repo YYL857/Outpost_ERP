@@ -10,13 +10,16 @@ import {
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
+  AdsFact,
   AppState,
   CatalogItem,
+  FeeEstimate,
   FeeSnapshot,
   FulfillmentType,
   NoonConnection,
   ReplenishConfig,
   SalesFact,
+  ShippingConfig,
   SkuDims,
   SkuLocalCost,
   StockItem,
@@ -103,6 +106,7 @@ const JOB_DOMAINS: SyncDomain[] = [
   "stock",
   "sales",
   "fees",
+  "ads",
   "reconcile",
 ];
 
@@ -115,9 +119,47 @@ function mergeSyncJobs(raw: SyncJob[] | undefined): SyncJob[] {
   return JOB_DOMAINS.map((d) => map.get(d)!);
 }
 
+/** 旧店铺缺 RMB 分档时写入业务默认；不把 AED 字段误当 RMB */
+function normalizeShipping(raw: Partial<ShippingConfig>): ShippingConfig {
+  return {
+    airFreightAedPerKg: Number(raw.airFreightAedPerKg) || 0,
+    airLeadDays: Math.max(1, Math.floor(Number(raw.airLeadDays) || 10)),
+    seaFreightAedPerCbm: Number(raw.seaFreightAedPerCbm) || 0,
+    seaLeadDays: Math.max(1, Math.floor(Number(raw.seaLeadDays) || 60)),
+    airFreightRmbPerKg:
+      raw.airFreightRmbPerKg != null && Number(raw.airFreightRmbPerKg) >= 0
+        ? Number(raw.airFreightRmbPerKg)
+        : 65,
+    seaFreightRmbPerCbmPlug:
+      raw.seaFreightRmbPerCbmPlug != null && Number(raw.seaFreightRmbPerCbmPlug) >= 0
+        ? Number(raw.seaFreightRmbPerCbmPlug)
+        : 2200,
+    seaFreightRmbPerCbmBuiltin:
+      raw.seaFreightRmbPerCbmBuiltin != null &&
+      Number(raw.seaFreightRmbPerCbmBuiltin) >= 0
+        ? Number(raw.seaFreightRmbPerCbmBuiltin)
+        : 2400,
+    seaFreightRmbPerCbmGeneral:
+      raw.seaFreightRmbPerCbmGeneral != null &&
+      Number(raw.seaFreightRmbPerCbmGeneral) >= 0
+        ? Number(raw.seaFreightRmbPerCbmGeneral)
+        : 1830,
+    buybackRate: Number(raw.buybackRate) || 0,
+    volumetricDivisor: Math.max(1, Number(raw.volumetricDivisor) || 6000),
+    updatedAt: String(raw.updatedAt ?? new Date().toISOString()),
+  };
+}
+
 function normalizeCatalog(raw: Partial<CatalogItem> & { partnerSku?: string }): CatalogItem | null {
   const partnerSku = String(raw.partnerSku ?? "").trim();
   if (!partnerSku) return null;
+  const nowMs = Date.now();
+  let updatedAt = String(raw.updatedAt ?? nowIso());
+  const t = new Date(updatedAt).getTime();
+  // 加载时钳制促销结束日等未来时间，避免售价永久锁死
+  if (Number.isNaN(t) || t > nowMs + 24 * 60 * 60 * 1000) {
+    updatedAt = new Date(nowMs).toISOString();
+  }
   return {
     partnerSku,
     title: String(raw.title ?? partnerSku),
@@ -128,7 +170,7 @@ function normalizeCatalog(raw: Partial<CatalogItem> & { partnerSku?: string }): 
     currency: String(raw.currency ?? "SAR") || "SAR",
     listingType: String(raw.listingType ?? ""),
     source: "NOON",
-    updatedAt: String(raw.updatedAt ?? nowIso()),
+    updatedAt,
   };
 }
 
@@ -169,12 +211,17 @@ export function seed(): AppState {
       stockSince: null,
       salesSince: null,
       feesSince: null,
+      adsSince: null,
     },
     shipping: {
       airFreightAedPerKg: 0,
       airLeadDays: 10,
       seaFreightAedPerCbm: 0,
       seaLeadDays: 60,
+      airFreightRmbPerKg: 65,
+      seaFreightRmbPerCbmPlug: 2200,
+      seaFreightRmbPerCbmBuiltin: 2400,
+      seaFreightRmbPerCbmGeneral: 1830,
       buybackRate: 0,
       volumetricDivisor: 6000,
       updatedAt: ts,
@@ -194,6 +241,8 @@ export function seed(): AppState {
     stock: [],
     salesFacts: [],
     feeSnapshots: [],
+    feeEstimates: [],
+    adsFacts: [],
     skuLocalCosts: [],
     skuDims: [],
     replenishConfigs: [],
@@ -205,6 +254,7 @@ export function seed(): AppState {
       stock: [],
       sales: [],
       fees: [],
+      ads: [],
       updatedAt: null,
     },
   };
@@ -232,7 +282,10 @@ function migrate(raw: Partial<AppState>): AppState {
       },
     },
     cursors: { ...base.cursors, ...(raw.cursors ?? {}) },
-    shipping: { ...base.shipping, ...(raw.shipping ?? {}) },
+    shipping: normalizeShipping({
+      ...base.shipping,
+      ...(raw.shipping ?? {}),
+    }),
     review: { ...base.review, ...(raw.review ?? {}) },
     syncJobs: mergeSyncJobs(raw.syncJobs),
     syncAlerts: raw.syncAlerts ?? [],
@@ -242,6 +295,8 @@ function migrate(raw: Partial<AppState>): AppState {
     stock,
     salesFacts: (raw.salesFacts as SalesFact[] | undefined) ?? [],
     feeSnapshots: (raw.feeSnapshots as FeeSnapshot[] | undefined) ?? [],
+    feeEstimates: (raw.feeEstimates as FeeEstimate[] | undefined) ?? [],
+    adsFacts: (raw.adsFacts as AdsFact[] | undefined) ?? [],
     skuLocalCosts: (raw.skuLocalCosts as SkuLocalCost[] | undefined) ?? [],
     skuDims: (raw.skuDims as SkuDims[] | undefined) ?? [],
     replenishConfigs: (raw.replenishConfigs as ReplenishConfig[] | undefined) ?? [],
@@ -253,6 +308,7 @@ function migrate(raw: Partial<AppState>): AppState {
       stock: raw.portalCache?.stock ?? [],
       sales: raw.portalCache?.sales ?? [],
       fees: raw.portalCache?.fees ?? [],
+      ads: raw.portalCache?.ads ?? [],
       updatedAt: raw.portalCache?.updatedAt ?? null,
     },
   };

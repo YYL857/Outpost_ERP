@@ -12,9 +12,22 @@ import { createListingRouter } from "./modules/listing/listing.routes.js";
 import { createSalesRouter } from "./modules/sales/sales.routes.js";
 import { createAnalyticsRouter } from "./modules/analytics/analytics.routes.js";
 import { createFinanceRouter } from "./modules/finance/finance.routes.js";
+import { createDailyBriefRouter } from "./modules/daily-brief/daily-brief.routes.js";
+import {
+  createMarketIntelRouter,
+  ensureMarketDirs,
+  startMarketIntelScheduler,
+} from "./modules/market-intel/index.js";
+import { migrateConfigToLiveDefaults } from "./modules/market-intel/config.js";
+import { startInboxWatcher } from "./modules/market-intel/inbox-watcher.js";
 import { createShopsRouter } from "./shops/shops.routes.js";
 import { bootstrapShops, getActiveShop } from "./shops/registry.js";
 import { startNoonPoller } from "./modules/sync/poller.js";
+import { startAssemblySyncScheduler } from "./modules/sync/assembly-scheduler.js";
+import {
+  createSchedulersRouter,
+  resolveBootEnabled,
+} from "./modules/schedulers/index.js";
 import { saveState } from "./data/store.js";
 
 // 必须先于 loadEnv / loadState：写入按店 DATA_DIR 与凭证路径
@@ -50,6 +63,9 @@ app.use("/api/listing", createListingRouter(boundGetState));
 app.use("/api/sales", createSalesRouter(boundGetState));
 app.use("/api/analytics", createAnalyticsRouter(boundGetState));
 app.use("/api/finance", createFinanceRouter(boundGetState));
+app.use("/api/market-intel", createMarketIntelRouter());
+app.use("/api/daily-brief", createDailyBriefRouter());
+app.use("/api/schedulers", createSchedulersRouter(boundGetState));
 
 app.get("/api/ready", (_req, res) => {
   const s = boundGetState();
@@ -86,23 +102,36 @@ app.get("/api/modules", (_req, res) => {
     data: [
       { key: "home", title: "我的主页", phase: "P0" },
       { key: "sync-health", title: "同步健康中心", phase: "P0" },
+      { key: "schedulers", title: "定时任务", phase: "P0" },
       { key: "noon", title: "NOON 接入", phase: "P0" },
       { key: "catalog", title: "Catalog 产品库", phase: "P1" },
       { key: "listing", title: "链接上架", phase: "P1" },
       { key: "best-sell", title: "Best Sell", phase: "P1" },
       { key: "sales", title: "销量统计", phase: "P1" },
       { key: "finance", title: "财务报表", phase: "P2" },
+      { key: "selection", title: "市场情报", phase: "P1" },
     ],
   });
 });
 
 void saveState;
 
-startNoonPoller(boundGetState, env.pollIntervalMs);
+startNoonPoller(boundGetState, env.pollIntervalMs, {
+  enabled: resolveBootEnabled("noon-poller"),
+});
+startAssemblySyncScheduler(boundGetState, {
+  enabled: resolveBootEnabled("assembly-sync"),
+  respectOnBoot: true,
+});
 
-app.listen(env.port, () => {
+ensureMarketDirs("sa");
+migrateConfigToLiveDefaults();
+startMarketIntelScheduler();
+startInboxWatcher();
+
+app.listen(env.port, env.host, () => {
   const shop = getActiveShop();
-  console.log(`[outpost-api] http://127.0.0.1:${env.port}`);
+  console.log(`[outpost-api] http://${env.host}:${env.port} (LAN ok if host=0.0.0.0)`);
   console.log(
     `[outpost-api] driver=${repo.driver} noon.mode=${boundGetState().noon.mode} enabled=${boundGetState().noon.enabled}`,
   );
@@ -110,4 +139,5 @@ app.listen(env.port, () => {
     `[outpost-api] shop=${shop.id} cred=${shop.credentialsFile} data=${process.env.OUTPOST_DATA_DIR}`,
   );
   console.log(`[outpost-api] NOON webhook: POST /api/noon/webhook`);
+  console.log(`[outpost-api] market-intel: GET /api/market-intel/status (noon/sa)`);
 });

@@ -10,16 +10,6 @@ const emptyPortal = {
   lastFetchAt: null as string | null,
   lastImportAt: null as string | null,
   lastImportSummary: null as string | null,
-  hasSession: false,
-  sessionCookieCount: 0,
-  sessionFilePath: "",
-  sessionExpiresAt: null as string | null,
-  sessionRemainingMs: null as number | null,
-  sessionHealth: "missing" as const,
-  sessionUsable: "missing" as const,
-  sessionProbeAt: null as string | null,
-  sessionProbeMessage: null as string | null,
-  sessionProbeVerdict: null as string | null,
 };
 
 const empty: NoonConnection = {
@@ -36,7 +26,7 @@ const empty: NoonConnection = {
   portal: emptyPortal,
 };
 
-type Domain = "orders" | "catalog" | "stock" | "sales" | "fees";
+type Domain = "orders" | "catalog" | "stock" | "sales" | "fees" | "ads";
 
 export function NoonPage() {
   const [form, setForm] = useState<NoonConnection>(empty);
@@ -55,6 +45,7 @@ export function NoonPage() {
     const c = res.data;
     setCacheInfo(
       `缓冲：订单 ${c.counts.orders} / 商品 ${c.counts.catalog} / 库存 ${c.counts.stock}` +
+        ` / 销量 ${c.counts.sales ?? 0} / 费用 ${c.counts.fees ?? 0} / 广告 ${c.counts.ads ?? 0}` +
         (c.lastImportSummary ? ` · ${c.lastImportSummary}` : ""),
     );
   }
@@ -167,104 +158,17 @@ export function NoonPage() {
     }
   }
 
-  async function doBrowserLogin() {
-    setBusy(true);
-    setMessage("");
-    setError("");
-    try {
-      setMessage(
-        "已打开登录窗（本机 Chrome）：请登录并进入 Seller Lab；进入后约 3 秒会自动保存，然后关闭窗口即可…",
-      );
-      const res = await api.browserLogin();
-      setMessage(
-        (res.message ??
-          `登录态已写入本地文件（${res.data.cookieCount} 条 Cookie）`) +
-          " · 请尽快点「探测可用性」或「自动同步」",
-      );
-      const latest = await api.getNoonConnection();
-      setForm({
-        ...latest.data,
-        portal: { ...emptyPortal, ...(latest.data.portal ?? {}) },
-      });
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "浏览器登录失败");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function doClearSession() {
-    setBusy(true);
-    setMessage("");
-    setError("");
-    try {
-      const res = await api.clearBrowserSession();
-      setMessage(res.message ?? "已清除本地登录态");
-      const latest = await api.getNoonConnection();
-      setForm({
-        ...latest.data,
-        portal: { ...emptyPortal, ...(latest.data.portal ?? {}) },
-      });
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "清除失败");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function doProbeSession() {
-    setBusy(true);
-    setMessage("");
-    setError("");
-    try {
-      setMessage("正在探针登录态是否可用（会打开本机 Chrome）…");
-      const res = await api.probePortalSession();
-      setMessage(res.message ?? res.data.probe.message);
-      const latest = await api.getNoonConnection();
-      setForm({
-        ...latest.data,
-        portal: { ...emptyPortal, ...(latest.data.portal ?? {}) },
-      });
-      if (res.data.probe.usable !== "ok") {
-        setError(res.data.probe.message);
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "探针失败");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function doSessionFetch() {
-    setBusy(true);
-    setMessage("");
-    setError("");
-    try {
-      const res = await api.fetchPortalSession();
-      setMessage(
-        `${res.data.summary}${res.data.warnings.length ? `；警告：${res.data.warnings.join("；")}` : ""}`,
-      );
-      await refreshCache();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "会话拉取失败");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function doAutoSync(skipSop = false) {
+  async function doAutoSync() {
     setBusy(true);
     setMessage("");
     setError("");
     try {
       setMessage(
         form.mode === "live"
-          ? "正在 live 同步：Impex 导出 catalog + orders（库存随目录写入；注意 30 分钟限额）"
-          : skipSop
-            ? "正在扫描 portal-imports 并自动入库…"
-            : "正在自动同步：SOP 导出（需登录态）→ 自动入库…",
+          ? "正在 live 同步：Impex 导出（注意 30 分钟限额）…"
+          : "正在扫描 portal-imports 并自动入库…",
       );
-      const res = await api.autoSync({ skipSop, forceIngest: false });
+      const res = await api.autoSync({ forceIngest: false });
       setMessage(res.message ?? res.data.message);
       await refreshCache();
       await refreshDomainMap();
@@ -304,8 +208,8 @@ export function NoonPage() {
       <h1 className="page-title">NOON 接入</h1>
       <p className="page-desc">
         {form.mode === "live"
-          ? "推荐：模式选 live，配置 Service Account JSON（OUTPOST_NOON_CREDENTIALS_FILE），点「校验凭证」后「自动同步」——经 Partner API Impex 拉目录/订单/库存，不经 Seller Lab。"
-          : "门户路径：浏览器登录一次 → 点「自动同步」。系统按 SOP 拉报表到 D:\\outpost-data\\portal-imports 并入库。门户易被 Akamai 拦截时可改用 live。"}
+          ? "推荐：模式选 live，配置 Service Account JSON（OUTPOST_NOON_CREDENTIALS_FILE），点「校验凭证」后「自动同步」。"
+          : "门户路径：将 CSV 放入 portal-imports 后点「自动同步」入库。推荐改用 live（Partner API）。"}
       </p>
 
       <div className="status-bar ok" style={{ marginBottom: 16 }}>
@@ -338,29 +242,21 @@ export function NoonPage() {
         <h3 style={{ marginTop: 0 }}>自动同步</h3>
         <p className="muted" style={{ marginTop: 0 }}>
           {form.mode === "live"
-            ? "live 模式会 Impex 导出 catalog（默认 live）+ orders（近 30 天）；库存随目录 CSV 写入。注意账号常见限额：30 分钟约 2 次导出。"
-            : "有登录态时会尝试 Playwright 按 SOP 导出；随后扫描 portal-imports 自动识别文件类型并入库。后台也会定时扫目录。"}
+            ? "live 模式走 Partner API Impex。注意账号常见限额：30 分钟约 20 次导出。"
+            : "扫描 portal-imports 自动识别文件类型并入库。后台也会定时扫目录。"}
         </p>
         <div className="row">
           <button
             className="btn btn-primary"
             type="button"
             disabled={busy}
-            onClick={() => doAutoSync(false)}
+            onClick={() => doAutoSync()}
           >
             {busy
               ? "同步中…"
               : form.mode === "live"
                 ? "自动同步（Partner API）"
-                : "自动同步（SOP导出+入库）"}
-          </button>
-          <button
-            className="btn"
-            type="button"
-            disabled={busy}
-            onClick={() => doAutoSync(true)}
-          >
-            仅扫目录入库
+                : "自动同步（扫目录入库）"}
           </button>
           <button className="btn" type="button" disabled={busy} onClick={doAutoIngestOnly}>
             立即扫描 portal-imports
@@ -371,8 +267,9 @@ export function NoonPage() {
       <div className="card" style={{ marginBottom: 16 }}>
         <h3 style={{ marginTop: 0 }}>分域映射（一源一域一主页）</h3>
         <p className="muted" style={{ marginTop: 0 }}>
-          不同 NOON 报表进入不同 SyncDomain，展示到对应前哨页面，禁止全部塞进 Catalog。完整说明见{" "}
-          <code>docs/NOON_OUTPOST_DATA_MAP.md</code>。
+          不同 NOON 报表进入不同 SyncDomain，展示到对应慧运营页面，禁止全部塞进 Catalog。完整说明见{" "}
+          <code>docs/NOON_OUTPOST_DATA_MAP.md</code>。广告域由影刀导出投递（
+          <code>docs/YINGDAO_BRIDGE.md</code>），不走 Impex。
         </p>
         <table className="table">
           <thead>
@@ -380,7 +277,7 @@ export function NoonPage() {
               <th>域</th>
               <th>NOON 来源</th>
               <th>本地条数</th>
-              <th>前哨主页面</th>
+              <th>慧运营主页面</th>
               <th>状态</th>
               <th>期</th>
             </tr>
@@ -435,7 +332,7 @@ export function NoonPage() {
                 }}
               >
                 <option value="live">live（Partner API / Impex）</option>
-                <option value="portal">portal（浏览器 SOP，易被拦截）</option>
+                <option value="portal">portal（CSV / portal-imports）</option>
                 <option value="mock">mock（开发模拟）</option>
               </select>
             </div>
@@ -521,184 +418,14 @@ export function NoonPage() {
             </>
           ) : null}
 
-          <h3 style={{ marginTop: 18 }}>门户登录态</h3>
-          <p className="muted" style={{ marginTop: 0 }}>
-            {form.mode === "live"
-              ? "live 模式不依赖门户 Cookie；以下仅作过渡/对比。若仍用 portal，请完成登录并尽快探测。"
-              : null}
-            {form.mode !== "live" ? (
-              <>
-                点击下方按钮打开专用登录窗（本机 Chrome），完成 NOON 登录并进入 Seller Lab 后，
-                <strong>系统会等待约 3 秒再自动保存</strong>
-                ，然后关闭该窗口即可。
-                <strong>保存后请尽快点「自动同步」或「探测可用性」</strong>
-                （网关 Cookie 短命；有文件不等于一定能用）。
-              </>
-            ) : null}
-          </p>
-          <div
-            className="placeholder"
-            style={{ padding: 12, marginBottom: 12, fontSize: 13 }}
-          >
-            {form.portal?.hasSession ? (
-              <>
-                <strong
-                  style={{
-                    color:
-                      form.portal.sessionHealth === "expired"
-                        ? "var(--danger)"
-                        : form.portal.sessionHealth === "warning"
-                          ? "var(--warn)"
-                          : "var(--ok)",
-                  }}
-                >
-                  本地文件：
-                  {form.portal.sessionHealth === "expired"
-                    ? "已过期"
-                    : form.portal.sessionHealth === "warning"
-                      ? "即将过期"
-                      : "已保存"}
-                </strong>
-                <div style={{ marginTop: 8 }}>
-                  <strong
-                    style={{
-                      color:
-                        form.portal.sessionUsable === "ok"
-                          ? "var(--ok)"
-                          : form.portal.sessionUsable === "blocked" ||
-                              form.portal.sessionUsable === "expired"
-                            ? "var(--danger)"
-                            : "var(--warn)",
-                    }}
-                  >
-                    可用性：
-                    {form.portal.sessionUsable === "ok"
-                      ? "探针通过（可同步）"
-                      : form.portal.sessionUsable === "blocked"
-                        ? "被网关拦截"
-                        : form.portal.sessionUsable === "expired"
-                          ? "已失效"
-                          : form.portal.sessionUsable === "missing"
-                            ? "未保存"
-                            : "未探测 / 不明确"}
-                  </strong>
-                </div>
-                {form.portal.sessionProbeMessage && (
-                  <div className="muted" style={{ marginTop: 6 }}>
-                    {form.portal.sessionProbeMessage}
-                    {form.portal.sessionProbeAt
-                      ? ` · ${new Date(form.portal.sessionProbeAt).toLocaleString()}`
-                      : ""}
-                  </div>
-                )}
-                {(form.portal.sessionUsable === "blocked" ||
-                  form.portal.sessionUsable === "expired" ||
-                  form.portal.sessionHealth === "expired" ||
-                  form.portal.sessionHealth === "warning") && (
-                  <div className="muted" style={{ marginTop: 6 }}>
-                    请点击「打开登录窗」重新登录，保存后立即同步或再点「探测可用性」。
-                  </div>
-                )}
-                <div className="muted" style={{ marginTop: 6 }}>
-                  {form.portal.sessionCookieCount} 条 Cookie
-                  {form.portal.sessionExpiresAt
-                    ? ` · 失效时间 ${new Date(form.portal.sessionExpiresAt).toLocaleString()}`
-                    : ""}
-                  {form.portal.sessionRemainingMs != null &&
-                  form.portal.sessionRemainingMs > 0
-                    ? ` · 剩余约 ${Math.max(1, Math.round(form.portal.sessionRemainingMs / 60000))} 分钟`
-                    : ""}
-                </div>
-                <div className="muted" style={{ marginTop: 4, fontSize: 12 }}>
-                  {form.portal.sessionFilePath ||
-                    "D:\\outpost-data\\noon-session\\cookie-header.txt"}
-                </div>
-              </>
-            ) : (
-              <>
-                <strong>本地登录态：未保存</strong>
-                <div className="muted" style={{ marginTop: 6 }}>
-                  请先点「打开登录窗」完成登录。文件路径：D:\outpost-data\noon-session\cookie-header.txt
-                </div>
-              </>
-            )}
-          </div>
-          <div className="row" style={{ marginBottom: 12 }}>
-            <button
-              className="btn btn-primary"
-              type="button"
-              disabled={busy}
-              onClick={doBrowserLogin}
-            >
-              打开登录窗
-            </button>
-            <button
-              className="btn"
-              type="button"
-              disabled={busy || !form.portal?.hasSession}
-              onClick={doProbeSession}
-            >
-              探测可用性
-            </button>
-            <button
-              className="btn"
-              type="button"
-              disabled={busy || !form.portal?.hasSession}
-              onClick={doClearSession}
-            >
-              清除本地登录态
-            </button>
+          <div className="row" style={{ marginTop: 18, marginBottom: 12 }}>
             <button className="btn" type="button" disabled={busy} onClick={save}>
               保存接入配置
             </button>
+            <button className="btn" type="button" disabled={busy} onClick={validate}>
+              校验凭证
+            </button>
           </div>
-          <p className="muted" style={{ marginTop: 0, fontSize: 12 }}>
-            自动同步前会先探针；被拦截（fault filter abort）时跳过导出并提示重登。
-            仍失败时可把手动导出的 CSV 丢进 D:\outpost-data\portal-imports。
-          </p>
-
-          <details style={{ marginTop: 8 }}>
-            <summary className="muted" style={{ cursor: "pointer" }}>
-              高级：XHR URL / 会话拉取（可选）
-            </summary>
-            <div className="field-grid" style={{ marginTop: 10 }}>
-              <div className="field">
-                <label>订单数据 URL</label>
-                <input
-                  value={form.portal?.ordersUrl ?? ""}
-                  onChange={(e) => patchPortal("ordersUrl", e.target.value)}
-                  placeholder="portal.ordersUrl"
-                />
-              </div>
-              <div className="field">
-                <label>商品数据 URL</label>
-                <input
-                  value={form.portal?.catalogUrl ?? ""}
-                  onChange={(e) => patchPortal("catalogUrl", e.target.value)}
-                  placeholder="portal.catalogUrl"
-                />
-              </div>
-              <div className="field">
-                <label>库存数据 URL</label>
-                <input
-                  value={form.portal?.stockUrl ?? ""}
-                  onChange={(e) => patchPortal("stockUrl", e.target.value)}
-                  placeholder="portal.stockUrl"
-                />
-              </div>
-            </div>
-            <div className="row" style={{ marginTop: 14 }}>
-              <button className="btn" type="button" disabled={busy} onClick={save}>
-                保存接入配置
-              </button>
-              <button className="btn" type="button" disabled={busy} onClick={validate}>
-                校验门户就绪
-              </button>
-              <button className="btn" type="button" disabled={busy} onClick={doSessionFetch}>
-                会话拉取并同步
-              </button>
-            </div>
-          </details>
         </div>
 
         <div className="card">
@@ -726,6 +453,7 @@ export function NoonPage() {
                   <option value="stock">库存 stock（SOP Inventory）</option>
                   <option value="sales">销量 sales（SOP Sales）</option>
                   <option value="fees">费用 fees（SOP Transaction）</option>
+                  <option value="ads">广告 ads（Campaign Overview SKU CSV）</option>
                 </select>
               </div>
               <div className="field">

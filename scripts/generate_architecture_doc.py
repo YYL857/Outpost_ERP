@@ -8,7 +8,7 @@ from docx.oxml import OxmlElement
 import os
 
 out_path = os.path.join(
-    os.environ["USERPROFILE"], "Desktop", "前哨Outpost-ERP架构与实现方案.docx"
+    os.environ["USERPROFILE"], "Desktop", "慧运营Outpost-ERP架构与实现方案.docx"
 )
 
 doc = Document()
@@ -101,7 +101,7 @@ for _ in range(3):
 
 title = doc.add_paragraph()
 title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-r = title.add_run("前哨 Outpost")
+r = title.add_run("慧运营")
 set_run_font(r, size=28, bold=True, color=(13, 110, 99))
 
 sub = doc.add_paragraph()
@@ -118,7 +118,7 @@ meta = doc.add_paragraph()
 meta.alignment = WD_ALIGN_PARAGRAPH.CENTER
 meta.paragraph_format.space_before = Pt(24)
 r = meta.add_run(
-    "项目代号：前哨 Outpost ERP\n"
+    "项目代号：慧运营 ERP\n"
     "文档用途：架构说明 · 实现方案 · 上线对接指引\n"
     "版本：v0.2（门户采集为主 · 无官方开放接口场景）"
 )
@@ -128,7 +128,7 @@ doc.add_page_break()
 
 add_heading_cn("写在前面：一句话看懂这个项目", 1)
 add_para(
-    "「前哨 Outpost」是一套面向 NOON（中东电商平台）卖家的跨境电商经营后台。"
+    "「慧运营」是一套面向 NOON（中东电商平台）卖家的跨境电商经营后台。"
     "系统自己不创造订单和库存，全部平台经营数据以 NOON 为唯一数据源；"
     "本地负责采集归类、同步入库、成本配置、经营可视化和供应链协同。",
     first_line=True,
@@ -137,7 +137,7 @@ add_para(
     "关键现实约束：NOON 官方通常不提供可用的开放接口，但卖家可以通过网页登录后台。"
     "因此本系统的主数据入口是「门户模式（portal）」——"
     "从卖家后台导出文件导入，或用登录会话（Cookie + 数据 URL）拉取页面/XHR 数据，"
-    "再清洗归类后同步到前哨。业务模块只读本地已同步数据，不直连网页。",
+    "再清洗归类后同步到慧运营。业务模块只读本地已同步数据，不直连网页。",
     first_line=True,
 )
 add_para("本文档重点回答：", bold=True)
@@ -181,7 +181,7 @@ add_table(
 
 add_heading_cn("1.3 功能需求清单", 2)
 add_para(
-    "界面风格：自有品牌「前哨 Outpost」，简约简洁，信息层级清楚；"
+    "界面风格：自有品牌「慧运营」，简约简洁，信息层级清楚；"
     "参考图仅作业务模块参考，不照搬外观与名称。",
     first_line=True,
 )
@@ -231,7 +231,7 @@ add_table(
         [
             "经营配置",
             "运费、汇率、测评佣金、上架额度",
-            "商家在前哨后台配置",
+            "商家在慧运营后台配置",
             "本地配置表",
         ],
     ],
@@ -244,7 +244,7 @@ add_table(
     [
         [
             "导出文件导入（推荐）",
-            "后台导出 CSV/JSON → 前哨「NOON 接入」上传 → 自动解析归类 → Inbox → 业务库",
+            "后台导出 CSV/JSON → 慧运营「NOON 接入」上传 → 自动解析归类 → Inbox → 业务库",
             "最高",
             "日常同步、可人工操作、字段相对固定",
         ],
@@ -500,8 +500,8 @@ add_table(
 
 add_heading_cn("八、总结", 1)
 add_para(
-    "前哨 Outpost 的定位很明确：它是 NOON 卖家的本地经营驾驶舱。"
-    "平台后台是经营真相的来源；在没有官方开放接口时，前哨通过门户采集"
+    "慧运营 的定位很明确：它是 NOON 卖家的本地经营驾驶舱。"
+    "平台后台是经营真相的来源；在没有官方开放接口时，慧运营通过门户采集"
     "（导出导入 / 会话拉取）把真相稳定搬进来，再叠加上商家自己的成本规则与经营动作。",
     first_line=True,
 )

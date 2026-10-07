@@ -78,7 +78,7 @@ else:
 # cleanup helper files user didn't ask for
 for extra in (
     FALLBACK,
-    os.path.join(os.environ["USERPROFILE"], "Desktop", "前哨Outpost-ERP架构与实现方案.docx"),
+    os.path.join(os.environ["USERPROFILE"], "Desktop", "慧运营Outpost-ERP架构与实现方案.docx"),
 ):
     try:
         if os.path.exists(extra):

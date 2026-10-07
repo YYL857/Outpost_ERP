@@ -4,10 +4,14 @@ import type { AppState } from "../../common/types.js";
 import { saveState } from "../../data/store.js";
 
 const shippingSchema = z.object({
-  airFreightAedPerKg: z.number().nonnegative(),
+  airFreightAedPerKg: z.number().nonnegative().optional().default(0),
   airLeadDays: z.number().int().positive(),
-  seaFreightAedPerCbm: z.number().nonnegative(),
+  seaFreightAedPerCbm: z.number().nonnegative().optional().default(0),
   seaLeadDays: z.number().int().positive(),
+  airFreightRmbPerKg: z.number().nonnegative(),
+  seaFreightRmbPerCbmPlug: z.number().nonnegative(),
+  seaFreightRmbPerCbmBuiltin: z.number().nonnegative(),
+  seaFreightRmbPerCbmGeneral: z.number().nonnegative(),
   buybackRate: z.number().positive(),
   volumetricDivisor: z.number().positive(),
 });

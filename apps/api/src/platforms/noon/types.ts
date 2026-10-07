@@ -52,6 +52,20 @@ export type NoonFeeDto = {
   updated_at: string;
 };
 
+/** Noon Ads Campaign Overview → SKU sheet */
+export type NoonAdsDto = {
+  partner_sku: string;
+  campaign: string;
+  from_date: string;
+  to_date: string;
+  spend: number;
+  revenue: number;
+  orders: number;
+  views: number;
+  clicks: number;
+  updated_at: string;
+};
+
 export type NoonWebhookEnvelope = {
   event_id: string;
   event_type: string;
@@ -66,6 +80,7 @@ export type NoonWebhookEnvelope = {
 /**
  * NOON 平台客户端契约。
  * live 实现替换 MockNoonClient 即可，上层 Inbox/同步管道不用改。
+ * sales/fees：live 走 Impex；portal/mock 读 cache 或样例；ads 无官方 API（影刀 CSV）。
  */
 export interface NoonClient {
   readonly mode: NoonConnection["mode"];
@@ -74,6 +89,11 @@ export interface NoonClient {
   fetchOrder(orderNr: string): Promise<NoonOrderDto | null>;
   fetchStockSince(since: string | null): Promise<NoonStockDto[]>;
   fetchCatalogSince(since: string | null): Promise<NoonCatalogDto[]>;
+  fetchSalesSince(since: string | null): Promise<NoonSalesDto[]>;
+  fetchFeesSince(since: string | null): Promise<NoonFeeDto[]>;
 }
 
-export type PullDomain = Extract<SyncDomain, "orders" | "catalog" | "stock">;
+export type PullDomain = Extract<
+  SyncDomain,
+  "orders" | "catalog" | "stock" | "sales" | "fees"
+>;
