@@ -1,0 +1,90 @@
+{
+  "baseUrl": "https://www.noon.partners/",
+  "headless": false,
+  "timeoutMs": 180000,
+  "reports": [
+    {
+      "id": "catalog_live",
+      "label": "在线商品",
+      "domainHint": "catalog",
+      "url": "https://www.noon.partners/en-ae/catalog-exports",
+      "actions": [
+        { "type": "goto", "url": "https://www.noon.partners/en-ae/catalog-exports" },
+        { "type": "click", "selector": "text=Online products", "optional": true },
+        { "type": "click", "selector": "text=Export", "optional": true },
+        { "type": "waitDownload", "filenameIncludes": "live", "optional": true }
+      ]
+    },
+    {
+      "id": "catalog_notlive",
+      "label": "不在线商品",
+      "domainHint": "catalog",
+      "url": "https://www.noon.partners/en-ae/catalog-exports",
+      "actions": [
+        { "type": "goto", "url": "https://www.noon.partners/en-ae/catalog-exports" },
+        { "type": "click", "selector": "text=Offline products", "optional": true },
+        { "type": "click", "selector": "text=Not live", "optional": true },
+        { "type": "click", "selector": "text=Export", "optional": true },
+        { "type": "waitDownload", "filenameIncludes": "notlive", "optional": true }
+      ]
+    },
+    {
+      "id": "inventory",
+      "label": "当前库存",
+      "domainHint": "stock",
+      "url": "https://www.noon.partners/en-ae/inventory",
+      "actions": [
+        { "type": "goto", "url": "https://www.noon.partners/en-ae/inventory" },
+        { "type": "click", "selector": "text=Export", "optional": true },
+        { "type": "click", "selector": "text=Download", "optional": true },
+        { "type": "waitDownload", "filenameIncludes": "Inventory", "optional": true }
+      ]
+    },
+    {
+      "id": "sales",
+      "label": "销售报表",
+      "domainHint": "sales",
+      "url": "https://www.noon.partners/en-ae/sales",
+      "actions": [
+        { "type": "goto", "url": "https://www.noon.partners/en-ae/sales" },
+        { "type": "click", "selector": "text=Export", "optional": true },
+        { "type": "waitDownload", "filenameIncludes": "sales", "optional": true }
+      ]
+    },
+    {
+      "id": "transaction",
+      "label": "佣金与出库费",
+      "domainHint": "fees",
+      "url": "https://www.noon.partners/en-ae/transaction-view",
+      "actions": [
+        { "type": "goto", "url": "https://www.noon.partners/en-ae/transaction-view" },
+        { "type": "click", "selector": "text=Export", "optional": true },
+        { "type": "waitDownload", "filenameIncludes": "transaction", "optional": true }
+      ]
+    },
+    {
+      "id": "orders",
+      "label": "订单列表",
+      "domainHint": "orders",
+      "url": "https://www.noon.partners/en-ae/orders",
+      "actions": [
+        { "type": "goto", "url": "https://www.noon.partners/en-ae/orders" },
+        { "type": "click", "selector": "text=Export", "optional": true },
+        { "type": "click", "selector": "text=Download", "optional": true },
+        { "type": "waitDownload", "filenameIncludes": "order", "optional": true }
+      ]
+    },
+    {
+      "id": "fbn_detailed",
+      "label": "FBN库存明细",
+      "domainHint": "stock",
+      "url": "https://www.noon.partners/en-ae/fbn-reports",
+      "actions": [
+        { "type": "goto", "url": "https://www.noon.partners/en-ae/fbn-reports" },
+        { "type": "click", "selector": "text=Inventory detailed", "optional": true },
+        { "type": "click", "selector": "text=Export", "optional": true },
+        { "type": "waitDownload", "filenameIncludes": "fbn_inventory", "optional": true }
+      ]
+    }
+  ]
+}

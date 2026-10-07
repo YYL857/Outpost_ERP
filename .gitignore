@@ -1,0 +1,16 @@
+node_modules
+dist
+.DS_Store
+*.log
+.env
+.env.local
+apps/api/.data
+apps/web/dist
+apps/api/dist
+scripts/noon-discover/out/
+
+# secrets / local runtime
+*.pem
+*.p12
+*credentials*sensitive*
+noon-session/

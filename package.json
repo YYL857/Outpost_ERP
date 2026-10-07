@@ -1,0 +1,16 @@
+{
+  "name": "outpost-erp",
+  "private": true,
+  "version": "0.1.0",
+  "description": "前哨 Outpost — 跨境电商 ERP",
+  "scripts": {
+    "dev": "pnpm -r --parallel --filter @outpost/web --filter @outpost/api run dev",
+    "dev:web": "pnpm --filter @outpost/web dev",
+    "dev:api": "pnpm --filter @outpost/api dev",
+    "build": "pnpm -r run build"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@10.32.1"
+}

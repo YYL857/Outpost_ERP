@@ -1,0 +1,203 @@
+import { createHash } from "node:crypto";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { join, resolve } from "node:path";
+import type { AppState } from "../../../common/types.js";
+import { processPendingInbox } from "../../../modules/sync/pipeline.js";
+import { pushAlert } from "../../../modules/sync/alerts.js";
+import { saveState } from "../../../data/store.js";
+import { detectDomainFromFilename } from "./parsers.js";
+import { importPortalFileByName } from "./import-service.js";
+
+export type IngestRecord = {
+  key: string;
+  filename: string;
+  domain: string;
+  mtimeMs: number;
+  size: number;
+  hash: string;
+  ingestedAt: string;
+  count: number;
+};
+
+export type IngestIndex = {
+  updatedAt: string;
+  files: Record<string, IngestRecord>;
+};
+
+export type AutoIngestResult = {
+  importDir: string;
+  scanned: number;
+  imported: number;
+  skipped: number;
+  failed: Array<{ file: string; error: string }>;
+  details: Array<{ file: string; domain: string; count: number }>;
+};
+
+function dataRoot() {
+  const root =
+    process.env.OUTPOST_BROWSER_DIR?.trim() ||
+    process.env.OUTPOST_DATA_DIR?.trim() ||
+    "D:\\outpost-data";
+  return resolve(root.includes("json") ? join(root, "..") : root);
+}
+
+export function getImportDir(): string {
+  const fromEnv = process.env.OUTPOST_IMPORT_DIR?.trim();
+  if (fromEnv) return resolve(fromEnv);
+  return join(dataRoot(), "portal-imports");
+}
+
+function indexPath(dir: string) {
+  return join(dir, ".ingested.json");
+}
+
+function loadIndex(dir: string): IngestIndex {
+  const p = indexPath(dir);
+  if (!existsSync(p)) return { updatedAt: new Date().toISOString(), files: {} };
+  try {
+    return JSON.parse(readFileSync(p, "utf8")) as IngestIndex;
+  } catch {
+    return { updatedAt: new Date().toISOString(), files: {} };
+  }
+}
+
+function saveIndex(dir: string, index: IngestIndex) {
+  index.updatedAt = new Date().toISOString();
+  writeFileSync(indexPath(dir), JSON.stringify(index, null, 2), "utf8");
+}
+
+function fileHash(content: string) {
+  return createHash("sha1").update(content).digest("hex").slice(0, 16);
+}
+
+function listCandidateFiles(dir: string): string[] {
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  return readdirSync(dir)
+    .filter((n) => !n.startsWith("."))
+    .filter((n) => /\.(csv|json|txt)$/i.test(n))
+    .map((n) => join(dir, n));
+}
+
+/**
+ * 扫描 portal-imports，按文件名识域自动入库（去重：mtime+size+hash）
+ */
+export async function runAutoIngest(
+  state: AppState,
+  opts?: { force?: boolean },
+): Promise<AutoIngestResult> {
+  const importDir = getImportDir();
+  if (!existsSync(importDir)) mkdirSync(importDir, { recursive: true });
+
+  const index = loadIndex(importDir);
+  const files = listCandidateFiles(importDir);
+  const result: AutoIngestResult = {
+    importDir,
+    scanned: files.length,
+    imported: 0,
+    skipped: 0,
+    failed: [],
+    details: [],
+  };
+
+  for (const full of files) {
+    const filename = full.split(/[/\\]/).pop() ?? full;
+    const domain = detectDomainFromFilename(filename);
+    if (!domain) {
+      result.skipped += 1;
+      continue;
+    }
+
+    let content: string;
+    let st: { mtimeMs: number; size: number };
+    try {
+      st = statSync(full);
+      content = readFileSync(full, "utf8");
+    } catch (err) {
+      result.failed.push({
+        file: filename,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      continue;
+    }
+
+    const hash = fileHash(content);
+    const key = filename.toLowerCase();
+    const prev = index.files[key];
+    if (
+      !opts?.force &&
+      prev &&
+      prev.hash === hash &&
+      prev.mtimeMs === st.mtimeMs &&
+      prev.size === st.size
+    ) {
+      result.skipped += 1;
+      continue;
+    }
+
+    try {
+      const imported = importPortalFileByName(state, filename, content);
+      // 大报表可能一次 Inbox 很多，循环直到处理完
+      for (let i = 0; i < 50; i++) {
+        const { processed } = await processPendingInbox(state, 200);
+        if (!processed) break;
+      }
+      index.files[key] = {
+        key,
+        filename,
+        domain: imported.domain,
+        mtimeMs: st.mtimeMs,
+        size: st.size,
+        hash,
+        ingestedAt: new Date().toISOString(),
+        count: imported.count,
+      };
+      result.imported += 1;
+      result.details.push({
+        file: filename,
+        domain: imported.domain,
+        count: imported.count,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      result.failed.push({ file: filename, error: message });
+      pushAlert(state, {
+        level: "warning",
+        title: "自动入库失败",
+        detail: `${filename}: ${message}`,
+      });
+    }
+  }
+
+  saveIndex(importDir, index);
+  state.noon.portal.lastImportAt = new Date().toISOString();
+  state.noon.portal.lastImportSummary = `自动入库 扫描${result.scanned} 新导入${result.imported} 跳过${result.skipped} 失败${result.failed.length}`;
+  saveState(state);
+
+  return result;
+}
+
+/** 启动时 + 定时扫目录 */
+export function startImportDirWatcher(
+  getState: () => AppState,
+  intervalMs = 60_000,
+) {
+  const tick = () => {
+    void runAutoIngest(getState()).catch((err) => {
+      console.error("[auto-ingest]", err);
+    });
+  };
+  tick();
+  const timer = setInterval(tick, intervalMs);
+  if (typeof timer.unref === "function") timer.unref();
+  console.log(
+    `[auto-ingest] watching ${getImportDir()} every ${intervalMs}ms`,
+  );
+  return () => clearInterval(timer);
+}
