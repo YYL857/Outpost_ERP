@@ -6,6 +6,7 @@ import {
   readFileSync,
   renameSync,
   statSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
@@ -17,11 +18,11 @@ export const OUTPOST_ROOT = resolve(
 
 const REGISTRY_PATH = join(OUTPOST_ROOT, "shops-registry.json");
 
-/** 两家 Noon 店：凭证按你提供的路径隔离 */
+/** Noon 店：凭证按店铺路径隔离 */
 export const DEFAULT_SHOPS: ShopRecord[] = [
   {
     id: "PRJ396770",
-    name: "Shop PRJ396770",
+    name: "HUI Beauty",
     projectCode: "PRJ396770",
     credentialsFile: "D:\\PRJ396770\\noon_credentials_sensitive.json",
     rootDir: join(OUTPOST_ROOT, "shops", "PRJ396770"),
@@ -30,14 +31,52 @@ export const DEFAULT_SHOPS: ShopRecord[] = [
   },
   {
     id: "PRJ482387",
-    name: "Shop PRJ482387",
+    name: "HFY-KSA",
     projectCode: "PRJ482387",
     credentialsFile: "D:\\PRJ482387\\noon_credentials_sensitive.json",
     rootDir: join(OUTPOST_ROOT, "shops", "PRJ482387"),
     countryCode: "sa",
     noonMode: "live",
   },
+  {
+    id: "PRJ488078",
+    name: "Glam Bag Collection",
+    projectCode: "PRJ488078",
+    credentialsFile: "D:\\PRJ488078\\noon_credentials_sensitive.json",
+    rootDir: join(OUTPOST_ROOT, "shops", "PRJ488078"),
+    countryCode: "sa",
+    noonMode: "live",
+  },
+  {
+    id: "PRJ595165",
+    name: "mmm",
+    projectCode: "PRJ595165",
+    credentialsFile: "D:\\PRJ595165\\noon_credentials_sensitive.json",
+    rootDir: join(OUTPOST_ROOT, "shops", "PRJ595165"),
+    countryCode: "sa",
+    noonMode: "live",
+  },
 ];
+
+/**
+ * 数据对齐「成败」默认只盯这些店（前两家老店）。
+ * 可用 OUTPOST_HEALTH_GATE_SHOP_IDS=id1,id2 覆盖。
+ */
+export function getHealthGateShopIds(): string[] {
+  const raw = process.env.OUTPOST_HEALTH_GATE_SHOP_IDS?.trim();
+  if (raw) {
+    const ids = raw
+      .split(/[,;\s]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (ids.length) return ids;
+  }
+  return DEFAULT_SHOPS.slice(0, 2).map((s) => s.id);
+}
+
+export function isHealthGateShop(shopId: string): boolean {
+  return getHealthGateShopIds().includes(shopId);
+}
 
 function nowIso() {
   return new Date().toISOString();
@@ -59,19 +98,46 @@ export function ensureShopDirs(shop: ShopRecord) {
   }
 }
 
+function atomicWriteJson(path: string, data: unknown) {
+  const tmp = `${path}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(data, null, 2), "utf8");
+  try {
+    renameSync(tmp, path);
+  } catch {
+    copyFileSync(tmp, path);
+    try {
+      unlinkSync(tmp);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 export function loadRegistry(): ShopsRegistry {
   if (!existsSync(OUTPOST_ROOT)) mkdirSync(OUTPOST_ROOT, { recursive: true });
-  if (!existsSync(REGISTRY_PATH)) {
-    const initial: ShopsRegistry = {
+  let raw: ShopsRegistry | null = null;
+  if (existsSync(REGISTRY_PATH)) {
+    const text = readFileSync(REGISTRY_PATH, "utf8").trim();
+    if (text) {
+      try {
+        raw = JSON.parse(text) as ShopsRegistry;
+      } catch (err) {
+        console.warn(
+          `[shops] shops-registry.json 损坏，按默认店重建: ${
+            err instanceof Error ? err.message : err
+          }`,
+        );
+      }
+    }
+  }
+  if (!raw) {
+    raw = {
       version: 1,
       activeShopId: DEFAULT_SHOPS[0].id,
       shops: DEFAULT_SHOPS.map((s) => ({ ...s })),
       updatedAt: nowIso(),
     };
-    writeFileSync(REGISTRY_PATH, JSON.stringify(initial, null, 2), "utf8");
-    return initial;
   }
-  const raw = JSON.parse(readFileSync(REGISTRY_PATH, "utf8")) as ShopsRegistry;
   const byId = new Map((raw.shops ?? []).map((s) => [s.id, s]));
   // 仅补齐默认店；已存在的记录保留用户录入的凭证路径 / 名称
   for (const def of DEFAULT_SHOPS) {
@@ -102,13 +168,16 @@ export function loadRegistry(): ShopsRegistry {
     shops,
     updatedAt: nowIso(),
   };
-  writeFileSync(REGISTRY_PATH, JSON.stringify(next, null, 2), "utf8");
-  return next;
+  const unchanged =
+    raw.activeShopId === activeShopId &&
+    JSON.stringify(raw.shops ?? []) === JSON.stringify(shops);
+  if (!unchanged) atomicWriteJson(REGISTRY_PATH, next);
+  return unchanged ? { ...raw, shops, activeShopId } : next;
 }
 
 export function saveRegistry(registry: ShopsRegistry) {
   registry.updatedAt = nowIso();
-  writeFileSync(REGISTRY_PATH, JSON.stringify(registry, null, 2), "utf8");
+  atomicWriteJson(REGISTRY_PATH, registry);
 }
 
 export function getActiveShop(registry?: ShopsRegistry): ShopRecord {

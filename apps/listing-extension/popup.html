@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>Listing Capture</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        width: 320px;
+        margin: 12px;
+        font-size: 13px;
+      }
+      button {
+        width: 100%;
+        padding: 8px;
+        cursor: pointer;
+        margin-top: 6px;
+      }
+      label {
+        display: block;
+        font-size: 12px;
+        color: #555;
+        margin-top: 8px;
+      }
+      input[type="text"] {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 6px 8px;
+        margin-top: 4px;
+      }
+      #msg {
+        margin-top: 8px;
+        color: #444;
+        white-space: pre-wrap;
+      }
+      .hint {
+        color: #666;
+        font-size: 12px;
+        margin: 0 0 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <p>在 Noon <strong>单个商品详情页</strong>采集对手标题/价格/卖点，写入 Listing inbox。</p>
+    <p class="hint">
+      默认已指向办公室后端 <strong>192.168.1.112</strong>。一般不用改；连不上时再改下方地址并保存。
+    </p>
+    <label for="apiBase">Outpost API 地址</label>
+    <input id="apiBase" type="text" placeholder="http://192.168.1.112:8787" />
+    <button id="saveApi" type="button">保存地址</button>
+    <button id="capture" type="button">采集本品页 → Listing</button>
+    <div id="msg"></div>
+    <script src="popup.js"></script>
+  </body>
+</html>

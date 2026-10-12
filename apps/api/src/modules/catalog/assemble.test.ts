@@ -102,6 +102,7 @@ const adsFacts: AdsFact[] = [
     orders: 3,
     views: 1000,
     clicks: 80,
+    atc: 20,
     updatedAt: "2026-09-15T00:00:00.000Z",
   },
   {
@@ -114,6 +115,7 @@ const adsFacts: AdsFact[] = [
     orders: 1,
     views: 500,
     clicks: 40,
+    atc: 8,
     updatedAt: "2026-09-15T00:00:00.000Z",
   },
   // 半截区间：不应计入 7 日窗口
@@ -127,6 +129,7 @@ const adsFacts: AdsFact[] = [
     orders: 9,
     views: 9,
     clicks: 9,
+    atc: 1,
     updatedAt: "2026-09-15T00:00:00.000Z",
   },
 ];
@@ -176,6 +179,40 @@ assertEq(inv.fbp, 5, "fbp");
 assertEq(inv.inTransit, 2, "inTransit");
 assertEq(inv.total, 15, "total");
 
+// 有真分仓时，Catalog 假仓 FBN/FBP 不得再加进 FBN（否则还能卖天数虚高）
+const invWithHint = sumInventory(
+  [
+    ...stock,
+    {
+      partnerSku: "N1-TEST",
+      warehouseCode: "FBN",
+      fulfillment: "fbn",
+      qty: 14,
+      inTransitQty: 0,
+      updatedAt: "2026-09-15T00:00:00.000Z",
+    },
+  ],
+  "N1-TEST",
+);
+assertEq(invWithHint.fbn, 10, "ignore catalog FBN hint when real ledger exists");
+assertEq(invWithHint.total, 15, "hint not in total");
+
+// 仅有假仓时仍可读（冷启动尚未拉 Detailed）
+const hintOnly = sumInventory(
+  [
+    {
+      partnerSku: "N1-HINT",
+      warehouseCode: "FBN",
+      fulfillment: "fbn",
+      qty: 7,
+      inTransitQty: 0,
+      updatedAt: "2026-09-15T00:00:00.000Z",
+    },
+  ],
+  "N1-HINT",
+);
+assertEq(hintOnly.fbn, 7, "hint-only still counts");
+
 const w7 = sumSalesWindow(salesFacts, "N1-TEST", asOf, 7);
 assertEq(w7.units, 14, "7d units");
 assertEq(w7.amount, 1400, "7d amount");
@@ -191,59 +228,67 @@ const latest = sumAdsLatest(adsFacts, item);
 assertEq(latest.spend, 100, "latest spend A+B same band");
 assertEq(latest.roas, 3, "latest roas");
 
-// 计费重 MAX(1, 0.5)=1 → 空运头程 65 RMB
+// 计费重 1kg ×65（preferAir 默认空运单方式，不再与海运取平均）
 assertEq(
   computeHeadhaulRmb({
-    preferAir: true,
     chargeableKg: 1,
     volumeCm3: 3000,
     shipping,
   }),
   65,
-  "air headhaul 65/kg",
+  "air-only headhaul 1kg×65",
 );
 assertEq(
   computeHeadhaulRmb({
-    preferAir: false,
     chargeableKg: 1,
     volumeCm3: 1_000_000,
     cargoType: "general",
     shipping,
+    preferAir: false,
   }),
   1830,
-  "sea general 1830/cbm",
+  "sea-only general 1cbm×1830",
 );
 assertEq(
   computeHeadhaulRmb({
-    preferAir: false,
     chargeableKg: 1,
     volumeCm3: 1_000_000,
     cargoType: "plug",
     shipping,
+    preferAir: false,
   }),
   2200,
-  "sea plug 2200",
+  "sea-only plug 1cbm×2200",
 );
 assertEq(
   computeHeadhaulRmb({
-    preferAir: false,
     chargeableKg: 1,
     volumeCm3: 1_000_000,
     cargoType: "builtin",
     shipping,
+    preferAir: false,
   }),
   2400,
-  "sea builtin 2400",
+  "sea-only builtin 1cbm×2400",
 );
 assertEq(
   computeHeadhaulRmb({
-    preferAir: false,
     chargeableKg: 0.1,
     volumeCm3: 0,
     shipping,
   }),
   6.5,
-  "sea missing dims → weight×65 fallback",
+  "air 0.1kg×65",
+);
+assertEq(
+  computeHeadhaulRmb({
+    chargeableKg: 1,
+    volumeCm3: 3000,
+    shipping,
+    skuHeadhaulRmb: 12.5,
+  }),
+  12.5,
+  "sku packing override wins",
 );
 
 const row1 = assembleCatalogRow({
@@ -290,13 +335,57 @@ assertEq(row1.fees.commissionAmount, 15, "commission 15%");
 assertEq(row1.specs.volumetricWeightKg, 0.5, "vol weight");
 assertEq(row1.specs.chargeableWeightKg, 1, "chargeable MAX");
 assertEq(row1.fees.freightEst, 0, "freightEst deprecated");
-// 飞书头程 10 忽略；费率头程 65 RMB；purchase 20 CNY / 1.8
+// 飞书头程 10 忽略；空运单方式 1kg×65；purchase 20 CNY / 1.8
 const headhaulRmb = 65;
+const seaHeadhaulRmb = 5.49; // 0.003 cbm × 1830
 const headhaulSar = round2(headhaulRmb / 1.8);
 const purchaseSar = round2(20 / 1.8);
 const taxOnly = round2((15 + 7) * 0.15);
 const feeTotal = round2(15 + taxOnly + 7);
-assertEq(row1.fees.headhaul, headhaulRmb, "headhaul from rate table RMB");
+assertEq(row1.fees.headhaul, headhaulRmb, "headhaul from air rate RMB");
+assertEq(row1.fees.freightMode, "air", "mode follows product preferAir");
+assertEq(row1.fees.headhaulBasis, "fallback", "no packing summary → fallback");
+const seaMode = assembleCatalogRow({
+  item,
+  stock,
+  salesFacts,
+  adsFacts,
+  fee,
+  localCost: { ...localCost, preferAir: false },
+  dims,
+  replenish: {
+    partnerSku: "N1-TEST",
+    safetyDays: 7,
+    urgentDays: 2,
+    skip: false,
+    updatedAt: "2026-09-15T00:00:00.000Z",
+  },
+  shipping,
+  asOf,
+});
+assertEq(seaMode.fees.freightMode, "sea", "sea product mode");
+assertEq(seaMode.fees.headhaul, seaHeadhaulRmb, "sea mode uses cbm×sea rate");
+assertEq(
+  assembleCatalogRow({
+    item,
+    stock: [],
+    salesFacts: [],
+    adsFacts: [],
+    fee: null,
+    localCost,
+    dims,
+    replenish: null,
+    shipping,
+    skuHeadhaul: {
+      unitHeadhaulRmb: 8.8,
+      basis: "actual",
+      confidence: "actual",
+    },
+    asOf,
+  }).fees.headhaul,
+  8.8,
+  "packing actual override in assemble",
+);
 assertEq(row1.fees.taxAmount, taxOnly, "tax = (comm+outbound)*0.15");
 assertEq(row1.fees.total, feeTotal, "fee total = comm + tax + outbound");
 assertEq(
@@ -309,6 +398,8 @@ assertEq(row1.profit.rmb, Math.round(row1.profit.sar! * 1.8 * 100) / 100, "rmb")
 assertEq(row1.profit.afterPurchase, row1.profit.sar, "afterPurchase == sar");
 assertEq(row1.priceSource, "noon:catalog", "priceSource");
 assertEq(row1.priceUpdatedAt, item.updatedAt, "priceUpdatedAt");
+assertEq(row1.activePrice, null, "no activity price");
+assertEq(row1.listPrice, null, "no list price");
 assertEq(
   row1.profit.margin,
   round2(row1.profit.sar! / 100),
@@ -316,8 +407,43 @@ assertEq(
 );
 assertEq(row1.profit.adsNet7d, 200, "ads net 300-100");
 assertEq(row1.ads.d7.roas, 3, "assembled roas");
-assertEq(row1.replenish.availableDays, 7.5, "available days 15/2");
-assertEq(row1.replenish.status, "stable", "status stable");
+// d90: 14 units / 90 → dailyAvg round2 = 0.16；FBN 10 / 0.16 = 62.5（不含 supermall/fbp）
+assertEq(row1.replenish.dailyAvg, round2(14 / 90), "replenish dailyAvg uses d90");
+assertEq(
+  row1.replenish.availableDays,
+  round2(10 / round2(14 / 90)),
+  "available days = FBN / d90 dailyAvg (ignore supermall)",
+);
+assertEq(row1.replenish.status, "stable", "status stable when days > safety");
+
+// 超商有货、FBN 为空 → 可卖天 0（链接会下架）
+const fbnEmpty = assembleCatalogRow({
+  item,
+  stock: [
+    {
+      partnerSku: "N1-TEST",
+      warehouseCode: "RUHMS01",
+      fulfillment: "supermall",
+      qty: 50,
+      inTransitQty: 0,
+      updatedAt: "2026-09-15T00:00:00.000Z",
+    },
+  ],
+  salesFacts,
+  adsFacts: [],
+  fee: null,
+  localCost: null,
+  dims: null,
+  replenish: { partnerSku: "N1-TEST", safetyDays: 7, urgentDays: 2, skip: false },
+  shipping,
+  asOf,
+});
+assertEq(fbnEmpty.inventory.fbn, 0, "fbn empty");
+assertEq(fbnEmpty.inventory.supermall, 50, "supermall still counted in inventory col");
+assertEq(fbnEmpty.inventory.total, 0, "total excludes supermall");
+assertEq(fbnEmpty.stockQty, 0, "stockQty = FBN only");
+assertEq(fbnEmpty.replenish.availableDays, 0, "FBN=0 → 0 days even if supermall>0");
+assertEq(fbnEmpty.replenish.status, "urgent", "FBN empty → urgent");
 
 // 仅有采购、无回购汇率：无法把 CNY 换成 SAR，不展示伪毛利
 const purchaseOnly = assembleCatalogRow({

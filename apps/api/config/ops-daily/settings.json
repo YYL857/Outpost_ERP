@@ -1,0 +1,28 @@
+{
+  "timezone": "Asia/Shanghai",
+  "invalid_order_statuses": [
+    "Cancelled",
+    "canceled",
+    "Returned",
+    "returned",
+    "Failed",
+    "Undelivered",
+    "Could Not Be Delivered",
+    "could not be delivered"
+  ],
+  "return_statuses": ["Returned", "returned", "return"],
+  "notes": {
+    "CIR": "是否计入有效销量待业务确认；当前未加入 invalid 列表",
+    "sales_source_of_truth": "Phase1 CSV / 完整 sales_export；不贴齐残缺 Prep golden 销量",
+    "ads": "区间 upsert + 单日 portal CSV 切片；coverage=partial（缺日导致花费偏低，不阻断）",
+    "ads_fill": "可用 FLOW Overview xlsx → ads_sku_YYYY-MM-DD_YYYY-MM-DD.csv 补洞后重跑",
+    "aging": "FBN detailed FIFO；FLOW 2609 文件实为销售导出错名，v1 用 2606–2608",
+    "phase4": "佣金/出库费/到仓旁路 CSV；飞书产品表回写默认关（feishu_product_writeback=false）",
+    "migration_closed": "2026-10-09 FLOW Phase4 diff 收口：面板回归100%；周费用/到仓分报通过；可选后续不阻断（真2609库龄、广告补日、TV佣金、飞书回写）"
+  },
+  "ads_coverage": "partial",
+  "phase": 4,
+  "output_file_prefix": "运营面板_今天",
+  "feishu_product_writeback": false,
+  "vat_rate": 1.15
+}

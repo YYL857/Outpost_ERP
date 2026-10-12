@@ -52,7 +52,7 @@ function padStyle(raw: unknown): string {
 }
 
 /** 查找代码表 → 颜色代码 / 店铺→站点 */
-function buildLookupMaps(sheet: FeishuRawSheet | undefined): {
+export function buildLookupMaps(sheet: FeishuRawSheet | undefined): {
   colorCode: Map<string, string>;
   storeSite: Map<string, string>;
 } {
@@ -151,7 +151,7 @@ function resolveHeadhaul(
   return landedPick;
 }
 
-function reconstructPsku(
+export function reconstructPsku(
   row: unknown[],
   headers: Map<string, number>,
   colorCode: Map<string, string>,

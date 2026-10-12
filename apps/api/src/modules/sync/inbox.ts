@@ -14,6 +14,8 @@ export function enqueueInbox(
     domain: SyncDomain;
     entityKey: string;
     payload: unknown;
+    /** 默认 true；Catalog 顺带库存提示传 false */
+    countsTowardJobSuccess?: boolean;
   },
 ): { event: InboxEvent; duplicate: boolean } {
   const existing = state.inbox.find((e) => e.eventId === input.eventId);
@@ -35,6 +37,7 @@ export function enqueueInbox(
     processedAt: null,
     error: null,
     attempts: 0,
+    countsTowardJobSuccess: input.countsTowardJobSuccess,
   };
   state.inbox.unshift(event);
   trimInbox(state);

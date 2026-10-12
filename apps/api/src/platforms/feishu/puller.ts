@@ -1,6 +1,7 @@
 /**
- * M2 Puller：飞书表 → raw 快照
- * 边界：只写 feishu-raw；不 normalize、不 portal-imports、不改 AppState。
+ * M2 Puller：飞书表 → raw 快照（只读远端表）
+ * 边界：只写本地 feishu-raw；不 normalize、不 portal-imports、不改 AppState；
+ * 绝不 create/update/delete 飞书多维表或电子表格单元格。
  */
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -71,7 +72,7 @@ function writeJson(path: string, data: unknown) {
   }
 }
 
-async function pullOneDoc(
+async function pullOneBitableDoc(
   doc: FeishuDocRef,
   cfg: FeishuDocsConfig,
   http: FeishuHttpClient,
@@ -79,13 +80,143 @@ async function pullOneDoc(
   opts: PullRawOptions,
 ): Promise<FeishuPullDocResult> {
   const started = Date.now();
-  const token = doc.spreadsheetToken?.trim();
-  if (!token) {
+  const tableId = doc.bitableTableId?.trim();
+  if (!tableId) {
     throw new FeishuError(
-      `文档 ${doc.id} 无 spreadsheetToken`,
+      `文档 ${doc.id} 无 bitableTableId`,
       "DOC_TOKEN_MISSING",
       "config",
       { docId: doc.id },
+    );
+  }
+
+  let appToken = doc.bitableAppToken?.trim() || "";
+  if (!appToken) {
+    const wiki = doc.wikiToken?.trim();
+    if (!wiki) {
+      throw new FeishuError(
+        `文档 ${doc.id} 缺少 bitableAppToken / wikiToken`,
+        "DOC_TOKEN_MISSING",
+        "config",
+        { docId: doc.id },
+      );
+    }
+    appToken = await http.resolveWikiBitableAppToken(wiki);
+  }
+
+  const table = await http.readBitableTable(appToken, tableId);
+  const values = table.values;
+  const rowCount = values.length;
+  const colCount = values.reduce(
+    (m, row) => Math.max(m, Array.isArray(row) ? row.length : 0),
+    0,
+  );
+  if (opts.failOnEmptySheet !== false && rowCount <= 1) {
+    throw new FeishuError(
+      `多维表 ${doc.id} 无数据行`,
+      "SHEET_EMPTY",
+      "read",
+      { docId: doc.id, tableId, appTokenMasked: maskSecret(appToken) },
+      "确认 table id 正确且应用有 bitable 阅读权限 / 已加为协作者",
+    );
+  }
+
+  const rawSheets: FeishuRawSheet[] = [
+    {
+      sheetId: tableId,
+      title: table.title || doc.label || "货代大纲",
+      rowCount,
+      colCount,
+      values,
+    },
+  ];
+
+  const snapshot: FeishuRawSnapshot = {
+    version: 1,
+    pulledAt: (opts.now ?? (() => new Date()))().toISOString(),
+    docId: doc.id,
+    docLabel: doc.label,
+    targetDomain: doc.targetDomain,
+    kind: "bitable",
+    spreadsheetToken: appToken,
+    sheets: rawSheets,
+    source: {
+      url: doc.url,
+      appIdMasked: maskSecret(cfg.credentials.appId),
+    },
+  };
+
+  const docDir = join(runDir, doc.id);
+  mkdirSync(docDir, { recursive: true });
+  const snapshotPath = join(docDir, "snapshot.json");
+  const metaPath = join(docDir, "meta.json");
+  const body = `${JSON.stringify(snapshot, null, 2)}\n`;
+  const digest = sha1Of(body);
+  try {
+    writeFileSync(snapshotPath, body, "utf8");
+  } catch (e) {
+    throw new FeishuError(
+      "写入 raw 快照失败",
+      "RAW_WRITE_FAILED",
+      "write",
+      { path: snapshotPath, cause: e instanceof Error ? e.message : String(e) },
+      "检查 OUTPOST_FEISHU_RAW_DIR 权限与磁盘空间",
+    );
+  }
+  writeJson(metaPath, {
+    docId: doc.id,
+    label: doc.label,
+    targetDomain: doc.targetDomain,
+    kind: "bitable",
+    bitableAppTokenMasked: maskSecret(appToken),
+    bitableTableId: tableId,
+    sha1: digest,
+    sheetCount: rawSheets.length,
+    sheets: rawSheets.map((s) => ({
+      title: s.title,
+      sheetId: s.sheetId,
+      rowCount: s.rowCount,
+      colCount: s.colCount,
+    })),
+    snapshotPath,
+    durationMs: Date.now() - started,
+  });
+
+  return {
+    docId: doc.id,
+    ok: true,
+    snapshotPath,
+    metaPath,
+    sheetCount: rawSheets.length,
+    totalRows: rawSheets.reduce((a, s) => a + s.rowCount, 0),
+    sha1: digest,
+    durationMs: Date.now() - started,
+  };
+}
+
+async function pullOneDoc(
+  doc: FeishuDocRef,
+  cfg: FeishuDocsConfig,
+  http: FeishuHttpClient,
+  runDir: string,
+  opts: PullRawOptions,
+): Promise<FeishuPullDocResult> {
+  if (doc.kind === "bitable" || doc.bitableTableId) {
+    return pullOneBitableDoc(doc, cfg, http, runDir, opts);
+  }
+
+  const started = Date.now();
+  let token = doc.spreadsheetToken?.trim() || "";
+  if (!token && doc.wikiToken?.trim()) {
+    token = await http.resolveWikiSpreadsheetToken(doc.wikiToken.trim());
+  }
+  if (!token) {
+    throw new FeishuError(
+      `文档 ${doc.id} 无 spreadsheetToken / wikiToken`,
+      "DOC_TOKEN_MISSING",
+      "config",
+      { docId: doc.id },
+      "填写 spreadsheetToken，或 wiki 链接（拉取时 get_node → sheet token）",
     );
   }
 
@@ -110,10 +241,7 @@ async function pullOneDoc(
       (m, row) => Math.max(m, Array.isArray(row) ? row.length : 0),
       0,
     );
-    if (
-      opts.failOnEmptySheet !== false &&
-      rowCount === 0
-    ) {
+    if (opts.failOnEmptySheet !== false && rowCount === 0) {
       throw new FeishuError(
         `工作表「${sheet.title}」无数据`,
         "SHEET_EMPTY",
@@ -133,7 +261,7 @@ async function pullOneDoc(
 
   const snapshot: FeishuRawSnapshot = {
     version: 1,
-    pulledAt: (opts.now ?? (() => new Date))().toISOString(),
+    pulledAt: (opts.now ?? (() => new Date()))().toISOString(),
     docId: doc.id,
     docLabel: doc.label,
     targetDomain: doc.targetDomain,
@@ -150,7 +278,6 @@ async function pullOneDoc(
   mkdirSync(docDir, { recursive: true });
   const snapshotPath = join(docDir, "snapshot.json");
   const metaPath = join(docDir, "meta.json");
-  // sha1 必须对「落盘字节」计算，供 M3 校验不丢/未篡改
   const body = `${JSON.stringify(snapshot, null, 2)}\n`;
   const digest = sha1Of(body);
   try {

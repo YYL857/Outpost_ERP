@@ -1,5 +1,6 @@
 import { Router } from "express";
 import type { AppState } from "../../common/types.js";
+import { requireAdmin } from "../../auth/middleware.js";
 import {
   getScheduler,
   isSchedulerId,
@@ -25,7 +26,7 @@ export function createSchedulersRouter(getState: () => AppState) {
     res.json({ data: getScheduler(id) });
   });
 
-  router.post("/:id/start", (req, res) => {
+  router.post("/:id/start", requireAdmin, (req, res) => {
     const id = String(req.params.id ?? "");
     if (!isSchedulerId(id)) {
       res.status(404).json({ error: `unknown scheduler: ${id}` });
@@ -34,7 +35,7 @@ export function createSchedulersRouter(getState: () => AppState) {
     res.json({ data: startScheduler(id, getState) });
   });
 
-  router.post("/:id/stop", (req, res) => {
+  router.post("/:id/stop", requireAdmin, (req, res) => {
     const id = String(req.params.id ?? "");
     if (!isSchedulerId(id)) {
       res.status(404).json({ error: `unknown scheduler: ${id}` });
@@ -43,7 +44,7 @@ export function createSchedulersRouter(getState: () => AppState) {
     res.json({ data: stopScheduler(id, getState) });
   });
 
-  router.post("/:id/run", async (req, res) => {
+  router.post("/:id/run", requireAdmin, async (req, res) => {
     const id = String(req.params.id ?? "");
     if (!isSchedulerId(id)) {
       res.status(404).json({ error: `unknown scheduler: ${id}` });

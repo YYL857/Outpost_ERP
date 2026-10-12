@@ -1,58 +1,61 @@
-# 慧运营 × 影刀（RPA）桥接
+# 慧运营 × 门户导出桥接
 
-Noon 对 Playwright/脚本反自动化时，**需要真人点击的导出**改由影刀完成，慧运营只消费落盘文件。
+Noon **Impex / 飞书** 仍走慧运营自动同步。必须点门户的报表改由 **Playwright 平台**（[`PW_RPA_PLATFORM.md`](./PW_RPA_PLATFORM.md)）。影刀仅保留市场情报/耗材。
 
-## 契约
+## 契约（广告示例）
 
 ```
-影刀（单应用按店循环）导出「昨天」广告报表
+Playwright job ads（按店循环）导出「昨天」广告报表
   → D:\YingDao\Downloads\{shopId}\ + Exports\ads\{shopId}\
-  → D:\outpost-data\shops\{shopId}\portal-imports\ads_sku_{Y}_{Y}.csv
+    → D:\outpost-data\shops\{shopId}\portal-imports\ads_sku_{Y}_{Y}.csv
   → 慧运营对该店 auto-ingest
   → Catalog 投产比
 ```
 
 | 项 | 约定 |
 |----|------|
-| 影刀工作区 | `D:\YingDao\` |
+| 工作区 | `D:\YingDao\` Downloads/Exports/Logs；脚本在仓库 `apps/api/scripts/noon-pw-platform` |
 | 热目录（按店） | `D:\outpost-data\shops\{shopId}\portal-imports` |
-| Ads 规范名 | `ads_sku_YYYY-MM-DD_YYYY-MM-DD.csv`（昨天：from=to） |
+| Ads 规范名 | `ads_sku_YYYY-MM-DD_YYYY-MM-DD.csv` |
+| Sales 规范名 | `sales_export_{from}_{to}.csv`（三态清洗后） |
 | 对接店 | `PRJ482387`、`PRJ396770`（`OUTPOST_YD_ADS_SHOPS`） |
-| 隔离 | 禁止写入全局 `portal-imports`；禁止写死单店目录 |
-| 解析 | `apps/api/src/platforms/noon/portal/parsers.ts` |
+| 隔离 | 禁止写入全局 `portal-imports` |
+| 解析 | `apps/api/src/platforms/noon/portal/parsers.ts`（口径不改） |
 
-## 影刀应用
+## 谁做什么
 
-详见 `D:\YingDao\Flows\CAPABILITY.md` 与 `GAP_MATRIX.md`。
+| 空缺 | 现路径 |
+|------|--------|
+| Ads Campaign Overview | Playwright `ads`（不再写 pending、不再 spawn 影刀） |
+| Seller Lab Sales（≠ Impex productviews） | Playwright `sales` |
+| 登录态续期 | Playwright `keepalive` |
+| FBN/Supermall 分仓 | **Impex Detailed** live `stock`；影刀 fbn-stock 下岗 |
+| My Catalog Estimated Fees / FBN 尺寸 | 待业务点名；不新建爬虫 |
+| Noon 沙特市场情报 / 耗材 Sold Recently | **仍影刀** `outpost_noon_sa_market_intel` |
+| Seller Lab 菜单教学 | 归档 `outpost_noon_guide_capture` |
+| SOP 失败兜底 | 归档 `outpost_inbox_deliver` |
 
-| 空缺 | 影刀应用 |
-|------|----------|
-| Ads Campaign Overview（投产比） | `outpost_noon_ads_export`（Export all → 规范 CSV） |
-| My Catalog Estimated Fees（佣金/出仓补缺） | 待建：打开 Partners Catalog → Export → `shops/{shopId}/portal-imports/catalog_est_fees_YYYY-MM-DD.csv`（慧运营域 `fee_estimates`，**不**写 `feeSnapshots`） |
-| FBN Inventory 尺寸重量（规格补缺） | 待建：FBN Inventory → Export → `shops/{shopId}/portal-imports/fbn_dims_YYYY-MM-DD.csv`（域 `fbn_dims`，仅补空 `skuDims`） |
-| SOP 失败时任意报表兜底 | `outpost_inbox_deliver` |
-| Noon 沙特市场情报类目列表 | `outpost_noon_sa_market_intel` → `market-imports/noon/sa/inbox/yingdao` |
+### 门户 Sales
 
-**Catalog 补缺规范名（禁止写全局 `portal-imports`）**
+补货页「导出销量表」→ job `sales` → `sales_export_*.csv`。Impex `productviewsandsalesdata` 继续补洞，两套不混。
 
-| 文件 | 域 | 落库 |
-|------|-----|------|
-| `catalog_est_fees_YYYY-MM-DD.csv` | `fee_estimates` | `feeEstimates`（财务不读） |
-| `fbn_dims_YYYY-MM-DD.csv` | `fbn_dims` | `skuDims` 仅补空 |
+### FBN 分仓
 
-全量导出链路说明：[`ADS_AUTO_PIPELINE.md`](./ADS_AUTO_PIPELINE.md)  
-市场情报投递：[`MARKET_INTEL_YINGDAO.md`](./MARKET_INTEL_YINGDAO.md)
+Impex `ledgerdetailedview` 为 live 主路径。不要再跑影刀库存导出当生产。
 
-## 慧运营侧操作
+## 本机 CLI
 
-1. 保证 API 在跑、热目录可写  
-2. **NOON 接入** → 扫目录入库（或等待 watcher）  
-3. **Catalog** → 刷新，看投产比列  
+```bash
+cd apps/api/scripts/noon-pw-platform
+python main.py ads ui
+python main.py sales ui
+```
 
-无匹配 SKU 时投产比为 `—`（样例 `N1-DEMO-SKU` 需换成真实 partnerSku）。
+影刀 CLI（仅市场情报/手工）：
 
-## 与 SOP 的关系
-
-- Impex / 可用的 SOP：仍走慧运营自动同步  
-- Ads 及被 Akamai 打断的门户导出：走影刀  
-- 两边最终都进**当前店**的 `shops/{shopId}/portal-imports`（按店隔离）
+```bash
+cd apps/api
+node scripts/yingdao-run.mjs health
+node scripts/yingdao-run.mjs run market-intel
+node scripts/yingdao-run.mjs consumables --demo
+```

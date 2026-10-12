@@ -68,6 +68,41 @@ assert(orphan, "orphan present");
 assertEq(orphan.isActive, false, "orphan inactive");
 assertEq(orphan.listingType, "orphan", "orphan type");
 assertEq(orphan.price, 39.9, "price from sales");
-assert(orphan.title.includes("未在线"), "title marker");
+assert(orphan.title.includes("未在线"), "title marker when no feishu name");
+
+const named = listCatalogItemsForAssembly({
+  catalog: [],
+  salesFacts: [
+    {
+      partnerSku: "N1SAQBJ002MLT",
+      date: "2026-09-20",
+      units: 1,
+      amount: 20,
+      updatedAt: "2026-09-20T00:00:00.000Z",
+    },
+  ],
+  feeSnapshots: [],
+  skuLocalCosts: [],
+  skuDims: [],
+  feishuOpsSnapshots: [
+    {
+      partnerSku: "N1SAQBJ002MLT",
+      sheetTitle: "9.21",
+      reportDate: "2026-09-20",
+      productName: "恐龙新生儿襁褓巾-彩色",
+      airInTransit: 0,
+      seaInTransit: 0,
+      purchasedQty: 0,
+      airReplenishPlan: 0,
+      seaReplenishPlan: 0,
+      fbn: null,
+      updatedAt: "2026-09-29T00:00:00.000Z",
+      source: "feishu:daily",
+    },
+  ],
+});
+const namedOrphan = named.find((i) => i.partnerSku === "N1SAQBJ002MLT")!;
+assertEq(namedOrphan.title, "恐龙新生儿襁褓巾-彩色", "feishu productName as title");
+assertEq(namedOrphan.listingType, "orphan", "still orphan type");
 
 console.log("OK list-items");

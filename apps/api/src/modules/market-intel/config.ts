@@ -121,7 +121,29 @@ export function loadConfig(): MarketIntelConfig {
     writeFileSync(paths.config, JSON.stringify(cfg, null, 2), "utf8");
     return cfg;
   }
-  const raw = JSON.parse(readFileSync(paths.config, "utf8")) as MarketIntelConfig;
+  const text = readFileSync(paths.config, "utf8").trim();
+  if (!text) {
+    const cfg = defaultConfig();
+    cfg.allowMock = resolveAllowMock(cfg.allowMock);
+    writeFileSync(paths.config, JSON.stringify(cfg, null, 2), "utf8");
+    console.warn(`[market-intel] empty config.json repaired → ${paths.config}`);
+    return cfg;
+  }
+  let raw: MarketIntelConfig;
+  try {
+    raw = JSON.parse(text) as MarketIntelConfig;
+  } catch (err) {
+    const bak = `${paths.config}.corrupt.${Date.now()}.bak`;
+    writeFileSync(bak, text, "utf8");
+    const cfg = defaultConfig();
+    cfg.allowMock = resolveAllowMock(cfg.allowMock);
+    writeFileSync(paths.config, JSON.stringify(cfg, null, 2), "utf8");
+    console.warn(
+      `[market-intel] corrupt config.json backed up to ${bak} and reset`,
+      err,
+    );
+    return cfg;
+  }
   const merged: MarketIntelConfig = {
     ...defaultConfig(),
     ...raw,
@@ -141,7 +163,16 @@ export function migrateConfigToLiveDefaults() {
   if (!existsSync(paths.config)) {
     return loadConfig();
   }
-  const raw = JSON.parse(readFileSync(paths.config, "utf8")) as MarketIntelConfig;
+  const text = readFileSync(paths.config, "utf8").trim();
+  if (!text) {
+    return loadConfig();
+  }
+  let raw: MarketIntelConfig;
+  try {
+    raw = JSON.parse(text) as MarketIntelConfig;
+  } catch {
+    return loadConfig();
+  }
   const fromEnv = envAllowMock();
   if (fromEnv !== undefined) raw.allowMock = fromEnv;
   else if (raw.allowMock === true && raw.primaryChannel !== "mock") {

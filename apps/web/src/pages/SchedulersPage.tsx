@@ -27,7 +27,9 @@ function formatTime(iso: string | null): string {
 }
 
 function groupLabel(group: SchedulerItem["group"]): string {
-  return group === "sync" ? "同步" : "市场情报";
+  if (group === "sync") return "同步";
+  if (group === "digest") return "晨报 / 关账";
+  return "市场情报";
 }
 
 export function SchedulersPage() {
@@ -97,7 +99,7 @@ export function SchedulersPage() {
     <div>
       <h1 className="page-title">定时任务</h1>
       <p className="page-desc">
-        管理本进程内全部调度：启停、立即执行。间隔仍由环境变量 / 市场情报配置决定。
+        管理本进程内全部调度：启停、立即执行。间隔由环境变量 / 市场情报配置决定；晨报推送按上海墙钟（店内默认 02:00，情报默认 03:30 且关闭）。
       </p>
 
       <div className={`status-bar ${activeCount > 0 ? "ok" : "idle"}`}>

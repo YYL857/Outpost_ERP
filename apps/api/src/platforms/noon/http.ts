@@ -1,6 +1,8 @@
 import { createSign, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import type { NoonConnection } from "../../common/types.js";
+import { getContextShopId } from "../../auth/context.js";
+import { loadRegistry } from "../../shops/registry.js";
 import { NOON_API_GATEWAY, NOON_ENDPOINTS } from "./endpoints.js";
 
 export class NoonHttpError extends Error {
@@ -25,7 +27,14 @@ type GatewaySession = {
   obtainedAt: number;
 };
 
-let cachedGateway: GatewaySession | null = null;
+/** 按店铺 / 凭证路径分桶，避免多用户看不同店时互踩 Cookie */
+const gatewayByKey = new Map<string, GatewaySession>();
+
+function gatewayCacheKey(): string {
+  const shopId = getContextShopId();
+  if (shopId) return `shop:${shopId}`;
+  return `cred:${credentialsPath()}`;
+}
 
 function userAgent() {
   return (
@@ -34,6 +43,11 @@ function userAgent() {
 }
 
 export function getNoonCredentialsPath() {
+  const shopId = getContextShopId();
+  if (shopId) {
+    const shop = loadRegistry().shops.find((s) => s.id === shopId);
+    if (shop?.credentialsFile) return shop.credentialsFile;
+  }
   return (
     process.env.OUTPOST_NOON_CREDENTIALS_FILE?.trim() ||
     "D:\\PRJ396770\\noon_credentials_sensitive.json"
@@ -122,12 +136,14 @@ function extractCookieHeader(res: Response): string {
 export async function loginNoonApiGateway(
   force = false,
 ): Promise<GatewaySession> {
+  const key = gatewayCacheKey();
+  const cached = gatewayByKey.get(key);
   if (
     !force &&
-    cachedGateway &&
-    Date.now() - cachedGateway.obtainedAt < 50 * 60 * 1000
+    cached &&
+    Date.now() - cached.obtainedAt < 50 * 60 * 1000
   ) {
-    return cachedGateway;
+    return cached;
   }
   const credentials = readNoonCredentialsFile();
   if (!credentials) {
@@ -162,12 +178,17 @@ export async function loginNoonApiGateway(
       "NOON API login 成功但未返回 Set-Cookie。请确认运行时支持 getSetCookie，或检查网关响应",
     );
   }
-  cachedGateway = { cookieHeader, obtainedAt: Date.now() };
-  return cachedGateway;
+  const session: GatewaySession = { cookieHeader, obtainedAt: Date.now() };
+  gatewayByKey.set(key, session);
+  return session;
 }
 
-export function clearNoonApiGatewayCache() {
-  cachedGateway = null;
+export function clearNoonApiGatewayCache(shopId?: string) {
+  if (shopId) {
+    gatewayByKey.delete(`shop:${shopId}`);
+    return;
+  }
+  gatewayByKey.clear();
 }
 
 function parseMethodPath(spec: string): { method: string; path: string } {

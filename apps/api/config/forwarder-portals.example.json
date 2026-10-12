@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "portals": [
+    {
+      "id": "yibang",
+      "name": "亦邦",
+      "adapter": "yundaomen",
+      "enabled": true,
+      "loginUrl": "https://www.yundaomen.com/#/index/placeOrder/placeIndex",
+      "trackingIdKinds": ["logistics"]
+    },
+    {
+      "id": "feitan",
+      "name": "飞坦",
+      "adapter": "fleetan",
+      "enabled": true,
+      "loginUrl": "https://vip.fleetan.com/#/login",
+      "trackingIdKinds": ["ticket"]
+    },
+    {
+      "id": "hansha",
+      "name": "汉沙",
+      "adapter": "nextsls",
+      "enabled": true,
+      "loginUrl": "https://hansha.nextsls.com/tms/wos/login",
+      "trackingIdKinds": ["ticket"]
+    },
+    {
+      "id": "yayouhui",
+      "name": "亚优汇",
+      "adapter": "nextsls",
+      "enabled": true,
+      "loginUrl": "https://yayoux.nextsls.com/tms/wos/login",
+      "trackingIdKinds": ["ticket"]
+    },
+    {
+      "id": "yite",
+      "name": "义特",
+      "adapter": "nextsls",
+      "enabled": true,
+      "loginUrl": "https://ywyite.nextsls.com/tms/wos/login",
+      "trackingIdKinds": ["logistics"]
+    },
+    {
+      "id": "anshida",
+      "name": "安时达",
+      "adapter": "ontask",
+      "enabled": true,
+      "loginUrl": "https://hk-customer-client.ontaskksad2d.com/login",
+      "trackingIdKinds": ["ticket"]
+    },
+    {
+      "id": "qike",
+      "name": "起克",
+      "adapter": "chicexpress",
+      "enabled": true,
+      "loginUrl": "https://erp.chicexpressglobal.com/#/login",
+      "trackingIdKinds": ["logistics"]
+    }
+  ]
+}

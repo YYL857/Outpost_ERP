@@ -6,7 +6,7 @@
     <style>
       body {
         font-family: system-ui, sans-serif;
-        width: 280px;
+        width: 300px;
         margin: 12px;
         font-size: 13px;
       }
@@ -14,18 +14,29 @@
         width: 100%;
         padding: 8px;
         cursor: pointer;
+        margin-top: 6px;
       }
       #msg {
         margin-top: 8px;
         color: #444;
         white-space: pre-wrap;
       }
+      .hint {
+        color: #666;
+        font-size: 12px;
+        margin: 0 0 8px;
+      }
     </style>
   </head>
   <body>
-    <p>在 Noon 沙特类目页点击采集，数据 POST 到本机慧运营。</p>
-    <button id="capture">采集当前页 → Outpost</button>
+    <p class="hint">
+      类目页→批量进选品池；商详页→盯价（双次同向才告警）。
+    </p>
+    <button id="capture">采集当前页 → 选品池</button>
+    <button id="price">采价 → 竞品监控</button>
+    <button id="add-only">仅加入监控池（不采价）</button>
     <div id="msg"></div>
     <script src="popup.js"></script>
   </body>
 </html>
+

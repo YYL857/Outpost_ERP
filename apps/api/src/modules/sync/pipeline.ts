@@ -34,6 +34,11 @@ import type {
 } from "../../platforms/noon/types.js";
 import { enqueueInbox } from "./inbox.js";
 import { pushAlert } from "./alerts.js";
+import {
+  applyStockLedgerSnapshot,
+  hasRealStockLedger,
+  stripCatalogStockHintRows,
+} from "./live-impex-domains.js";
 
 /** Webhook / poller / 手动同步共用：同一时刻只跑一路 Inbox，避免并发整表导出 */
 let inboxChain: Promise<unknown> = Promise.resolve();
@@ -99,9 +104,31 @@ export function upsertCatalog(state: AppState, dto: NoonCatalogDto) {
     !prevIsAbsurd &&
     new Date(incomingUpdated).getTime() < new Date(prev.updatedAt).getTime()
   ) {
-    return { applied: false, reason: "stale" as const };
+    const activePrice = positiveActivePrice(dto.active_price);
+    const listPrice = positiveActivePrice(dto.list_price);
+    const stockFbnNet = optionalStockFbnNet(dto.stock_fbn_net);
+    let touched = false;
+    if (activePrice != null && prev.activePrice !== activePrice) {
+      prev.activePrice = activePrice;
+      touched = true;
+    }
+    if (listPrice != null && prev.listPrice !== listPrice) {
+      prev.listPrice = listPrice;
+      touched = true;
+    }
+    // 库存比 catalog updated_at 更常变：即使行版本偏旧也刷新 Active Net Stock
+    if (stockFbnNet != null && prev.stockFbnNet !== stockFbnNet) {
+      prev.stockFbnNet = stockFbnNet;
+      touched = true;
+    }
+    return touched
+      ? { applied: true, reason: "active_price" as const }
+      : { applied: false, reason: "stale" as const };
   }
   const incomingImage = (dto.image_url ?? "").trim();
+  const activePrice = positiveActivePrice(dto.active_price);
+  const listPrice = positiveActivePrice(dto.list_price);
+  const stockFbnNet = optionalStockFbnNet(dto.stock_fbn_net);
   const next: CatalogItem = {
     partnerSku: dto.partner_sku,
     title: dto.title,
@@ -110,10 +137,13 @@ export function upsertCatalog(state: AppState, dto: NoonCatalogDto) {
     // 导出常缺图：空值不覆盖已有 imageUrl
     imageUrl: incomingImage || prev?.imageUrl || "",
     price: dto.price ?? 0,
+    activePrice: activePrice ?? prev?.activePrice ?? null,
+    listPrice: listPrice ?? prev?.listPrice ?? null,
     currency: dto.currency || "SAR",
     listingType: dto.listing_type ?? "",
     source: "NOON",
     updatedAt: incomingUpdated,
+    stockFbnNet: stockFbnNet ?? prev?.stockFbnNet ?? null,
   };
   if (idx < 0) {
     state.catalog.unshift(next);
@@ -121,6 +151,17 @@ export function upsertCatalog(state: AppState, dto: NoonCatalogDto) {
   }
   state.catalog[idx] = { ...prev!, ...next };
   return { applied: true, reason: "updated" as const };
+}
+
+function positiveActivePrice(v: number | null | undefined): number | null {
+  if (v == null || !Number.isFinite(v) || v <= 0) return null;
+  return Math.round(v * 100) / 100;
+}
+
+/** Catalog Active Net Stock · FBN；允许 0；缺省/非法 → null（不覆盖旧值） */
+function optionalStockFbnNet(v: number | null | undefined): number | null {
+  if (v == null || !Number.isFinite(Number(v)) || Number(v) < 0) return null;
+  return Math.floor(Number(v));
 }
 
 /** sale_end_date 等未来时间不可作版本号；超过「现在+1天」钳成入库时刻 */
@@ -208,6 +249,7 @@ export function upsertAdsFact(state: AppState, dto: NoonAdsDto) {
     orders: dto.orders,
     views: dto.views,
     clicks: dto.clicks,
+    atc: dto.atc ?? 0,
     updatedAt: dto.updated_at,
   };
   const idx = state.adsFacts.findIndex(
@@ -253,7 +295,10 @@ async function processPendingInboxLocked(state: AppState, limit = 40) {
       event.status = "processed";
       event.processedAt = new Date().toISOString();
       event.error = null;
-      markJobSuccess(state, event.domain);
+      // Catalog 顺带库存提示不得刷新 stock 域「上次成功」时间
+      if (event.countsTowardJobSuccess !== false) {
+        markJobSuccess(state, event.domain);
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       event.error = message;
@@ -447,7 +492,7 @@ export async function pullDomain(
           payload: row,
         });
       }
-      // live：catalog CSV 内嵌 FBN/FBP 库存，顺带入 stock（不额外消耗 Impex 配额）
+      // live：catalog CSV 内嵌 FBN/FBP 库存提示。已有分仓 ledger 时禁止再写，避免与 RUH01S 等真仓重复加总，并冒充 stock 同步成功。
       if (
         client instanceof Object &&
         "drainStockHints" in client &&
@@ -455,14 +500,19 @@ export async function pullDomain(
       ) {
         const live = client as LiveNoonClientLike;
         const hints = live.drainStockHints!();
-        for (const row of hints) {
-          enqueueInbox(state, {
-            eventId: `poll:stock:${row.partner_sku}:${row.warehouse_code}:${row.fulfillment}:${row.updated_at}`,
-            source: "poll",
-            domain: "stock",
-            entityKey: `${row.partner_sku}@${row.warehouse_code}@${row.fulfillment}`,
-            payload: row,
-          });
+        if (hasRealStockLedger(state.stock)) {
+          stripCatalogStockHintRows(state);
+        } else {
+          for (const row of hints) {
+            enqueueInbox(state, {
+              eventId: `poll:stock:${row.partner_sku}:${row.warehouse_code}:${row.fulfillment}:${row.updated_at}`,
+              source: "poll",
+              domain: "stock",
+              entityKey: `${row.partner_sku}@${row.warehouse_code}@${row.fulfillment}`,
+              payload: row,
+              countsTowardJobSuccess: false,
+            });
+          }
         }
         if (typeof live.drainFeeEstimateHints === "function") {
           for (const e of live.drainFeeEstimateHints()) {
@@ -473,15 +523,8 @@ export async function pullDomain(
       state.cursors.catalogSince = new Date().toISOString();
     } else if (domain === "stock") {
       const rows = await client.fetchStockSince(state.cursors.stockSince);
-      for (const row of rows) {
-        enqueueInbox(state, {
-          eventId: `poll:stock:${row.partner_sku}:${row.warehouse_code}:${row.fulfillment}:${row.updated_at}`,
-          source: "poll",
-          domain: "stock",
-          entityKey: `${row.partner_sku}@${row.warehouse_code}@${row.fulfillment}`,
-          payload: row,
-        });
-      }
+      // 全量快照原子写入（不经 inbox）：避免先清空再 duplicate 跳过导致空仓
+      applyStockLedgerSnapshot(state, rows);
       if (
         client instanceof Object &&
         "drainFbnDimsHints" in client &&

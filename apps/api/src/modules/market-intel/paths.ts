@@ -23,6 +23,14 @@ export function marketPaths(market: MarketCode = "sa") {
     inbox: join(root, "inbox"),
     alerts: join(root, "alerts"),
     reports: join(root, "reports"),
+    /** 竞品盯价池（与选品 watchlist 分离） */
+    monitorPool: join(root, "monitor-pool.json"),
+    /** 价观测时间序列目录 */
+    observations: join(root, "observations"),
+    /** 沙特情报来源注册表 */
+    sourceRegistry: join(root, "source-registry.json"),
+    /** 人工/半自动粘贴的来源片段 */
+    sourceSnippets: join(root, "source-snippets"),
   };
 }
 
@@ -40,6 +48,8 @@ export function ensureMarketDirs(market: MarketCode = "sa") {
     join(p.inbox, "extension"),
     p.alerts,
     p.reports,
+    p.observations,
+    p.sourceSnippets,
   ]) {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   }

@@ -9,6 +9,8 @@ import {
 } from "node:fs";
 import { join, resolve } from "node:path";
 import type { AppState } from "../../../common/types.js";
+import { getContextShopId } from "../../../auth/context.js";
+import { loadRegistry } from "../../../shops/registry.js";
 import { processPendingInbox } from "../../../modules/sync/pipeline.js";
 import { pushAlert } from "../../../modules/sync/alerts.js";
 import { saveState } from "../../../data/store.js";
@@ -49,6 +51,11 @@ function dataRoot() {
 }
 
 export function getImportDir(): string {
+  const shopId = getContextShopId();
+  if (shopId) {
+    const shop = loadRegistry().shops.find((s) => s.id === shopId);
+    if (shop?.rootDir) return resolve(join(shop.rootDir, "portal-imports"));
+  }
   const fromEnv = process.env.OUTPOST_IMPORT_DIR?.trim();
   if (fromEnv) return resolve(fromEnv);
   return join(dataRoot(), "portal-imports");
@@ -202,6 +209,7 @@ export type LatestAdsIngestResult = {
  */
 export async function ingestLatestAdsFile(
   state: AppState,
+  opts?: { notBeforeMs?: number },
 ): Promise<LatestAdsIngestResult> {
   const importDir = getImportDir();
   if (!existsSync(importDir)) mkdirSync(importDir, { recursive: true });
@@ -213,6 +221,19 @@ export async function ingestLatestAdsFile(
       ok: true,
       skipped: true,
       reason: "portal-imports 无 ads_sku_*.csv",
+    };
+  }
+  if (
+    opts?.notBeforeMs != null &&
+    picked.mtimeMs < opts.notBeforeMs
+  ) {
+    return {
+      importDir,
+      ok: true,
+      skipped: true,
+      reason: "最新 ads 文件早于本次导出，未入库旧表",
+      fileName: picked.fileName,
+      fileMtime: new Date(picked.mtimeMs).toISOString(),
     };
   }
 
@@ -254,6 +275,143 @@ export async function ingestLatestAdsFile(
     reportTo: picked.reportTo,
     count: imported.count,
   };
+}
+
+export type LatestSalesIngestResult = {
+  importDir: string;
+  ok: boolean;
+  skipped: boolean;
+  reason?: string;
+  fileName?: string;
+  count?: number;
+  reportFrom?: string | null;
+  reportTo?: string | null;
+};
+
+/**
+ * 补货/销量权威源：只强制入库最新 sales_export_*.csv。
+ * live 店不走 force 全目录，避免把旧 FBN 影刀表盖进库存。
+ */
+export async function ingestLatestSalesFile(
+  state: AppState,
+  opts?: { notBeforeMs?: number },
+): Promise<LatestSalesIngestResult> {
+  const importDir = getImportDir();
+  if (!existsSync(importDir)) mkdirSync(importDir, { recursive: true });
+
+  const picked = pickLatestSalesExportFile(importDir);
+  if (!picked) {
+    return {
+      importDir,
+      ok: true,
+      skipped: true,
+      reason: "portal-imports 无 sales_export_*.csv",
+    };
+  }
+  if (
+    opts?.notBeforeMs != null &&
+    picked.mtimeMs < opts.notBeforeMs
+  ) {
+    return {
+      importDir,
+      ok: true,
+      skipped: true,
+      reason: "最新 sales 文件早于本次导出，未入库旧表",
+      fileName: picked.fileName,
+    };
+  }
+
+  const content = readFileSync(picked.filePath, "utf8");
+  const st = statSync(picked.filePath);
+  const hash = fileHash(content);
+  const imported = importPortalFileByName(state, picked.fileName, content);
+  for (let i = 0; i < 50; i++) {
+    const { processed } = await processPendingInbox(state, 200);
+    if (!processed) break;
+  }
+
+  const index = loadIndex(importDir);
+  const key = picked.fileName.toLowerCase();
+  index.files[key] = {
+    key,
+    filename: picked.fileName,
+    domain: "sales",
+    mtimeMs: st.mtimeMs,
+    size: st.size,
+    hash,
+    ingestedAt: new Date().toISOString(),
+    count: imported.count,
+  };
+  saveIndex(importDir, index);
+  state.noon.portal.lastImportAt = new Date().toISOString();
+  state.noon.portal.lastImportSummary =
+    `销量权威源 ${picked.fileName} · 行${imported.count} · 报表${picked.reportFrom ?? "?"}→${picked.reportTo ?? "?"}`;
+  saveState(state);
+
+  return {
+    importDir,
+    ok: true,
+    skipped: false,
+    fileName: picked.fileName,
+    count: imported.count,
+    reportFrom: picked.reportFrom,
+    reportTo: picked.reportTo,
+  };
+}
+
+/** mtime 最新；同秒则取文件名 toDate、再 fromDate 更大者 */
+export function pickLatestSalesExportFile(importDir?: string): {
+  fileName: string;
+  filePath: string;
+  mtimeMs: number;
+  reportFrom: string | null;
+  reportTo: string | null;
+} | null {
+  const dir = importDir ?? getImportDir();
+  if (!existsSync(dir)) return null;
+  const names = readdirSync(dir).filter(
+    (n) => /^sales_export_.*\.csv$/i.test(n) && !n.startsWith("."),
+  );
+  if (!names.length) return null;
+
+  type Cand = {
+    fileName: string;
+    filePath: string;
+    mtimeMs: number;
+    reportFrom: string | null;
+    reportTo: string | null;
+  };
+  const cands: Cand[] = [];
+  for (const name of names) {
+    const filePath = join(dir, name);
+    try {
+      const st = statSync(filePath);
+      const m = name.match(
+        /sales_export_(20\d{2}-\d{2}-\d{2}).{0,3}(20\d{2}-\d{2}-\d{2})/i,
+      );
+      cands.push({
+        fileName: name,
+        filePath,
+        mtimeMs: st.mtimeMs,
+        reportFrom: m?.[1] ?? null,
+        reportTo: m?.[2] ?? null,
+      });
+    } catch {
+      // skip
+    }
+  }
+  if (!cands.length) return null;
+  cands.sort((a, b) => {
+    if (b.mtimeMs !== a.mtimeMs) return b.mtimeMs - a.mtimeMs;
+    const bt = b.reportTo ?? "";
+    const at = a.reportTo ?? "";
+    if (bt !== at) return bt > at ? 1 : -1;
+    const bf = b.reportFrom ?? "";
+    const af = a.reportFrom ?? "";
+    if (bf !== af) return bf > af ? 1 : -1;
+    return b.fileName.localeCompare(a.fileName);
+  });
+  return cands[0]!;
 }
 
 /** mtime 最新；同秒则取文件名 toDate、再 fromDate 更大者 */

@@ -52,6 +52,7 @@ const state = {
       orders: 0,
       views: 0,
       clicks: 0,
+      atc: 0,
       updatedAt: "2026-09-17T03:00:00.000Z",
     },
   ],

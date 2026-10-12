@@ -4,8 +4,15 @@
  */
 import type { AppState } from "../../common/types.js";
 import { pickLatestAdsSkuFile } from "../../platforms/noon/portal/auto-ingest.js";
+import {
+  isCatalogStockHintWarehouse,
+  stockLastImpexAt,
+  stockLedgerRowMaxAt,
+} from "../sync/live-impex-domains.js";
 
 const STALE_ADS_MS = 36 * 60 * 60 * 1000;
+/** 分仓库存超过此时长未真正 Impex → 标 stale（与默认 6h 刷新对齐并留一点缓冲） */
+const STALE_STOCK_MS = 8 * 60 * 60 * 1000;
 
 export type DomainProvenance = {
   source: string;
@@ -218,7 +225,14 @@ export function buildCatalogProvenance(state: AppState): CatalogProvenance {
   const ads = buildAdsProvenance(state);
 
   const catalogAt = maxIso(catalog.map((r) => r.updatedAt));
-  const stockAt = maxIso(stock.map((r) => r.updatedAt));
+  const stockLedgerAt = stockLedgerRowMaxAt(state);
+  const stockHintAt = maxIso(
+    stock
+      .filter((r) => isCatalogStockHintWarehouse(r.warehouseCode))
+      .map((r) => r.updatedAt),
+  );
+  const stockAt = stockLedgerAt ?? stockHintAt;
+  const stockPulledAt = stockLastImpexAt(state);
   const salesIngested = maxIso(sales.map((r) => r.updatedAt));
   const salesDates = dateSpan(sales.map((r) => r.date));
   const feeAt = maxIso(fees.map((r) => r.updatedAt));
@@ -266,6 +280,20 @@ export function buildCatalogProvenance(state: AppState): CatalogProvenance {
       ? `报表 ${ads.reportFrom} → ${ads.reportTo}`
       : "无报表区间";
 
+  const stockSyncedAt = stockPulledAt ?? stockLedgerAt;
+  const stockStale = stockSyncedAt
+    ? Date.now() - Date.parse(stockSyncedAt) > STALE_STOCK_MS
+    : stock.length > 0;
+  const stockNoteParts = [
+    "FBN / Supermall / 在途（Detailed ledger）",
+    stockPulledAt
+      ? `上次分仓拉取 ${shanghaiClock(stockPulledAt)}`
+      : "尚无分仓拉取游标（cursors.stockSince）",
+    stockHintAt && !stockLedgerAt
+      ? "当前仅有 Catalog 库存提示，未拉分仓账"
+      : null,
+  ].filter(Boolean);
+
   const slices: ProvenanceSlice[] = [
     makeSlice(today, {
       key: "price",
@@ -280,10 +308,13 @@ export function buildCatalogProvenance(state: AppState): CatalogProvenance {
       key: "stock",
       column: "库存",
       source: "Noon 库存",
-      dataNode: stockAt ? `库存快照 ${shanghaiClock(stockAt)}` : "无库存",
-      syncedAt: jobSuccessAt(state, "stock") ?? stockAt,
+      dataNode: stockAt
+        ? `库存行 ${shanghaiClock(stockAt)}`
+        : "无库存",
+      syncedAt: stockSyncedAt,
       count: stock.length,
-      note: "FBN / FBP / 在途",
+      stale: stockStale,
+      note: stockNoteParts.join(" · "),
     }),
     makeSlice(today, {
       key: "sales",

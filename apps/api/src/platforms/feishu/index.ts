@@ -16,7 +16,7 @@ export {
   readFeishuCredentials,
   summarizeConfig,
 } from "./config.js";
-export { parseFeishuDocUrl, resolveSpreadsheetToken } from "./link.js";
+export { parseFeishuDocUrl, resolveSpreadsheetToken, resolveBitableRef } from "./link.js";
 export { pullFeishuRaw } from "./puller.js";
 export type { PullRawOptions } from "./puller.js";
 export {
@@ -79,6 +79,11 @@ export {
   readLastNormalizePaths,
 } from "./ingest/local.js";
 export type { LocalAlignReport } from "./ingest/local.js";
+export {
+  ingestFeishuOpsIntoState,
+  resolveLastDailyBriefPath,
+} from "./ingest/ops.js";
+export type { OpsIngestReport } from "./ingest/ops.js";
 export type {
   NormalizeDocResult,
   NormalizeRunManifest,

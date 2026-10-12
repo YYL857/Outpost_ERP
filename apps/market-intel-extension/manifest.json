@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Outpost Noon SA Capture",
-  "version": "0.1.0",
-  "description": "Capture Noon Saudi listing JSON and POST to local Outpost market-intel ingest.",
+  "version": "0.2.0",
+  "description": "Noon SA capture: category ingest + PDP price monitor for Outpost market-intel.",
   "permissions": ["activeTab", "scripting"],
   "host_permissions": [
     "https://www.noon.com/*",

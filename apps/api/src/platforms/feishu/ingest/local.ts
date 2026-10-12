@@ -13,7 +13,9 @@ import { join, resolve } from "node:path";
 import type {
   AppState,
   CargoType,
+  CashLedgerEntry,
   CatalogItem,
+  PurchaseLine,
   SkuDims,
   SkuLocalCost,
 } from "../../../common/types.js";
@@ -35,6 +37,8 @@ export type LocalAlignReport = {
   sourceRawRunId?: string;
   costFile?: string;
   dimsFile?: string;
+  purchaseFile?: string;
+  cashFile?: string;
   catalogCount: number;
   storePrefixes: string[];
   cost: {
@@ -55,6 +59,15 @@ export type LocalAlignReport = {
     orphanLocal: number;
     catalogMissing: number;
   };
+  purchase: {
+    csvRows: number;
+    upserted: number;
+    skippedOtherShop: number;
+  };
+  cash: {
+    csvRows: number;
+    upserted: number;
+  };
   /** 当前店 Catalog 有、但无本地成本（需补数） */
   catalogMissingCost: string[];
   catalogMissingDims: string[];
@@ -64,6 +77,8 @@ export type LocalAlignReport = {
   contentSha1: {
     cost?: string;
     dims?: string;
+    purchase?: string;
+    cash?: string;
   };
 };
 
@@ -138,6 +153,8 @@ export function readLastNormalizePaths(normalizedRoot = getFeishuNormalizedDir()
   sourceRawRunId?: string;
   costFile?: string;
   dimsFile?: string;
+  purchaseFile?: string;
+  cashFile?: string;
   lastPath: string;
 } {
   const lastPath = join(normalizedRoot, "last-normalize.json");
@@ -153,7 +170,12 @@ export function readLastNormalizePaths(normalizedRoot = getFeishuNormalizedDir()
   const last = JSON.parse(readFileSync(lastPath, "utf8")) as {
     runId?: string;
     sourceRawRunId?: string;
-    files?: { localCost?: string; dims?: string };
+    files?: {
+      localCost?: string;
+      dims?: string;
+      purchase?: string;
+      cash?: string;
+    };
   };
   if (!last.runId) {
     throw new FeishuError(
@@ -168,6 +190,8 @@ export function readLastNormalizePaths(normalizedRoot = getFeishuNormalizedDir()
     sourceRawRunId: last.sourceRawRunId,
     costFile: last.files?.localCost,
     dimsFile: last.files?.dims,
+    purchaseFile: last.files?.purchase,
+    cashFile: last.files?.cash,
     lastPath,
   };
 }
@@ -274,6 +298,8 @@ export function ingestFeishuLocalIntoState(
     sourceRawRunId: paths.sourceRawRunId,
     costFile: paths.costFile,
     dimsFile: paths.dimsFile,
+    purchaseFile: paths.purchaseFile,
+    cashFile: paths.cashFile,
     catalogCount: state.catalog.length,
     storePrefixes: prefixes,
     cost: {
@@ -294,6 +320,8 @@ export function ingestFeishuLocalIntoState(
       orphanLocal: 0,
       catalogMissing: 0,
     },
+    purchase: { csvRows: 0, upserted: 0, skippedOtherShop: 0 },
+    cash: { csvRows: 0, upserted: 0 },
     catalogMissingCost: [],
     catalogMissingDims: [],
     orphanCostSample: [],
@@ -368,9 +396,99 @@ export function ingestFeishuLocalIntoState(
     }
   }
 
-  if (!paths.costFile && !paths.dimsFile) {
+  if (paths.purchaseFile && existsSync(paths.purchaseFile)) {
+    report.contentSha1.purchase = sha1File(paths.purchaseFile);
+    const rows = parseCsv(readFileSync(paths.purchaseFile, "utf8"));
+    report.purchase.csvRows = rows.length;
+    if (!opts.dryRun) {
+      const map = new Map(
+        (state.purchaseLines ?? []).map((x) => [x.id, x] as const),
+      );
+      for (const r of rows) {
+        const partnerSku = (r.partnerSku || "").trim();
+        if (!partnerSku) continue;
+        if (!belongsToShop(partnerSku, prefixes)) {
+          report.purchase.skippedOtherShop++;
+          continue;
+        }
+        const id = (r.id || "").trim() || `${partnerSku}:${r.purchasedAt}:${r.qty}`;
+        const prev = map.get(id);
+        const csvOrderId = (r.orderId || "").trim();
+        const csvTracking = (r.trackingNo || "").trim();
+        const csvTransit = (r.transitStatus || "").trim();
+        const csvEta = (r.etaDate || "").trim() || null;
+        // 飞书同步：订单号以表为准；物流字段无新值时保留 1688 回填
+        const next: PurchaseLine = {
+          id,
+          partnerSku,
+          productName: r.productName || "",
+          qty: Number(r.qty) || 0,
+          unitCost: Number(r.unitCost) || 0,
+          amount: Number(r.amount) || 0,
+          supplier: r.supplier || "",
+          purchasedAt: r.purchasedAt || null,
+          status: r.status || "",
+          remark: r.remark || "",
+          sheetTitle: r.sheetTitle || "",
+          updatedAt: r.updatedAt || ingestedAt,
+          source: r.source || "feishu:accounts",
+          orderId: csvOrderId || prev?.orderId || "",
+          trackingNo: csvTracking || prev?.trackingNo || "",
+          transitStatus: csvTransit || prev?.transitStatus || "",
+          etaDate: csvEta || prev?.etaDate || null,
+          logisticsUpdatedAt: prev?.logisticsUpdatedAt ?? null,
+        };
+        map.set(id, next);
+        report.purchase.upserted++;
+      }
+      state.purchaseLines = [...map.values()];
+    } else {
+      report.purchase.upserted = rows.length;
+    }
+  }
+
+  if (paths.cashFile && existsSync(paths.cashFile)) {
+    report.contentSha1.cash = sha1File(paths.cashFile);
+    const rows = parseCsv(readFileSync(paths.cashFile, "utf8"));
+    report.cash.csvRows = rows.length;
+    if (!opts.dryRun) {
+      const map = new Map(
+        (state.cashLedger ?? []).map((x) => [x.id, x] as const),
+      );
+      for (const r of rows) {
+        const id = (r.id || "").trim();
+        if (!id) continue;
+        const kindRaw = String(r.kind || "other");
+        const kind: CashLedgerEntry["kind"] =
+          kindRaw === "income" || kindRaw === "expense" ? kindRaw : "other";
+        const next: CashLedgerEntry = {
+          id,
+          kind,
+          amount: Number(r.amount) || 0,
+          category: r.category || "",
+          occurredAt: r.occurredAt || null,
+          remark: r.remark || "",
+          sheetTitle: r.sheetTitle || "",
+          updatedAt: r.updatedAt || ingestedAt,
+          source: r.source || "feishu:accounts",
+        };
+        map.set(id, next);
+        report.cash.upserted++;
+      }
+      state.cashLedger = [...map.values()];
+    } else {
+      report.cash.upserted = rows.length;
+    }
+  }
+
+  if (
+    !paths.costFile &&
+    !paths.dimsFile &&
+    !paths.purchaseFile &&
+    !paths.cashFile
+  ) {
     throw new FeishuError(
-      "normalize 产物中没有 localCost/dims CSV",
+      "normalize 产物中没有 localCost/dims/purchase/cash CSV",
       "NORMALIZE_EMPTY",
       "normalize",
       { normalizeRunId: paths.normalizeRunId },

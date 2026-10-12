@@ -4,6 +4,7 @@
  */
 import {
   detectDomainFromFilename,
+  parseCatalogContent,
   parseCatalogEstimatedFees,
   parseFbnDimsContent,
 } from "./parsers.js";
@@ -33,6 +34,11 @@ assertEq(
   "fbn dims domain",
 );
 assertEq(
+  detectDomainFromFilename("noon_financeweb_statements_2026-06_09.csv"),
+  "statements",
+  "statements domain",
+);
+assertEq(
   detectDomainFromFilename("PRJ_live.csv"),
   "catalog",
   "catalog still catalog",
@@ -60,5 +66,19 @@ assertEq(dims[0]!.length_cm, 12.6, "L");
 assertEq(dims[0]!.width_cm, 8.8, "W");
 assertEq(dims[0]!.height_cm, 3.3, "H");
 assertEq(dims[0]!.weight_kg, 0.04, "weight");
+
+const catalogCsv = [
+  "partner_sku,title,active_price,price,sale_price,currency",
+  "N1SABZH001BLK,Insulin,29.9,33.9,,SAR",
+  "N1PLAIN,Plain,,18.5,,SAR",
+].join("\n");
+const catalog = parseCatalogContent(catalogCsv, "csv");
+assertEq(catalog.length, 2, "two catalog rows");
+assertEq(catalog[0]!.price, 29.9, "selling price prefers active_price");
+assertEq(catalog[0]!.active_price, 29.9, "activity price column");
+assertEq(catalog[0]!.list_price, 33.9, "base price column");
+assertEq(catalog[1]!.price, 18.5, "missing active_price falls back to price");
+assertEq(catalog[1]!.active_price, null, "no activity price");
+assertEq(catalog[1]!.list_price, 18.5, "list price still present");
 
 console.log("OK gap-fill parsers");

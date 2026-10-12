@@ -46,7 +46,7 @@
 
 | NOON 来源（种子/待核实） | SyncDomain | 慧运营主页面 | Wave |
 |--------------------------|------------|------------|------|
-| Ads / Noon Ads | `ads` | 广告管理（主）+ Catalog 投产比列 | 2（入库已通；导出走影刀，UI 全自动待元素捕获） |
+| Ads / Noon Ads | `ads` | 广告管理（主）+ Catalog 投产比列 + Listing 优化漏斗 | 2（入库已通；导出走影刀，可 `request-export` 触发） |
 | Campaigns / promos | `campaigns` | 活动管理 | 2 |
 | Shipments / inbound / PO | `supply`（可再拆） | 采购管理 / 补货计划 / 发货管理 | 2 |
 | Pricing | `pricing` | Catalog 定价列（未实现） | 2 |

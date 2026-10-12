@@ -16,32 +16,44 @@ import type {
   WatchlistFile,
   WatchlistItem,
 } from "./types.js";
-import { classifyBrandTier, guessBrandToken, notePendingBrand, normalizeLegacyTier } from "./white-label.js";
+import { classifyBrandTier, guessBrandToken, notePendingBrand, normalizeLegacyTier, prunePendingBrandNoise } from "./white-label.js";
+import { cleanSellerName } from "./parse-products.js";
+import { isPlausiblePrice, looksPromoTitle } from "./signal-quality.js";
+import {
+  ensureUserWorkspace,
+  resolveWorkspaceUserId,
+  userWatchlistPath,
+} from "../../auth/workspace.js";
 
 function nowIso() {
   return new Date().toISOString();
 }
 
-export function loadWatchlist(): WatchlistFile {
-  const paths = ensureMarketDirs("sa");
-  if (!existsSync(paths.watchlist)) {
+function watchlistFilePath(userId?: string): string {
+  const uid = resolveWorkspaceUserId(userId);
+  ensureUserWorkspace(uid);
+  return userWatchlistPath(uid);
+}
+
+export function loadWatchlist(userId?: string): WatchlistFile {
+  const path = watchlistFilePath(userId);
+  if (!existsSync(path)) {
     const empty: WatchlistFile = {
       version: 1,
       market: "sa",
       updatedAt: nowIso(),
       items: [],
     };
-    writeFileSync(paths.watchlist, JSON.stringify(empty, null, 2), "utf8");
+    writeFileSync(path, JSON.stringify(empty, null, 2), "utf8");
     return empty;
   }
-  return JSON.parse(readFileSync(paths.watchlist, "utf8")) as WatchlistFile;
+  return JSON.parse(readFileSync(path, "utf8")) as WatchlistFile;
 }
 
-export function saveWatchlist(file: WatchlistFile) {
-  const paths = marketPaths("sa");
-  ensureMarketDirs("sa");
+export function saveWatchlist(file: WatchlistFile, userId?: string) {
+  const path = watchlistFilePath(userId);
   const next = { ...file, updatedAt: nowIso() };
-  writeFileSync(paths.watchlist, JSON.stringify(next, null, 2), "utf8");
+  writeFileSync(path, JSON.stringify(next, null, 2), "utf8");
   return next;
 }
 
@@ -68,6 +80,7 @@ export function upsertWatchlistFromDiscover(
   const now = nowIso();
   let added = 0;
   let updated = 0;
+  prunePendingBrandNoise();
 
   for (const p of products) {
     const tier = normalizeLegacyTier(
@@ -78,7 +91,11 @@ export function upsertWatchlistFromDiscover(
       guessBrandToken(p.brand) ||
       guessBrandToken(p.title) ||
       guessBrandToken(p.seller?.sellerName);
-    if (token && (tier === "white_candidate" || tier === "unknown")) {
+    if (
+      token &&
+      (tier === "white_candidate" || tier === "unknown") &&
+      !looksPromoTitle(p.title)
+    ) {
       const tags: string[] = [...(p.cardTags ?? [])];
       if (p.soldRecentlyText && !tags.some((t) => /sold\s+recently/i.test(t))) {
         tags.unshift(p.soldRecentlyText);
@@ -106,7 +123,7 @@ export function upsertWatchlistFromDiscover(
         url: p.url,
         title: p.title,
         categoryId: p.categoryId,
-        price: p.price,
+        price: isPlausiblePrice(p.price, p.title || "") ? p.price : null,
         currency: p.currency,
         rating: p.rating,
         reviewCount: p.reviewCount,
@@ -134,7 +151,11 @@ export function upsertWatchlistFromDiscover(
       }
       prev.url = p.url || prev.url;
       prev.categoryId = p.categoryId || prev.categoryId;
-      prev.price = p.price ?? prev.price;
+      if (p.price != null) {
+        prev.price = isPlausiblePrice(p.price, p.title || prev.title) ? p.price : null;
+      } else if (!isPlausiblePrice(prev.price, prev.title)) {
+        prev.price = null;
+      }
       prev.rating = p.rating ?? prev.rating;
       prev.reviewCount = p.reviewCount ?? prev.reviewCount;
       prev.imageUrl = p.imageUrl ?? prev.imageUrl;
@@ -164,6 +185,19 @@ export function upsertWatchlistFromDiscover(
     }
   }
 
+  // 扫一遍：清历史脏店名 / 脏价（即使本轮没再采到该 SKU）
+  for (const item of byKey.values()) {
+    if (item.seller?.sellerName) {
+      const cleaned = cleanSellerName(item.seller.sellerName);
+      if (cleaned !== item.seller.sellerName) {
+        item.seller = { ...item.seller, sellerName: cleaned };
+      }
+    }
+    if (item.price != null && !isPlausiblePrice(item.price, item.title || "")) {
+      item.price = null;
+    }
+  }
+
   const next = saveWatchlist({
     version: 1,
     market: "sa",
@@ -173,12 +207,43 @@ export function upsertWatchlistFromDiscover(
   return { watchlist: next, added, updated };
 }
 
+/** 不依赖新投递：清监控池脏价/脏店名 + pending 噪声 */
+export function scrubWatchlistSignalQuality() {
+  prunePendingBrandNoise();
+  const wl = loadWatchlist();
+  let priceCleared = 0;
+  let sellerCleared = 0;
+  for (const item of wl.items) {
+    if (item.seller?.sellerName) {
+      const cleaned = cleanSellerName(item.seller.sellerName);
+      if (cleaned !== item.seller.sellerName) {
+        item.seller = { ...item.seller, sellerName: cleaned };
+        sellerCleared += 1;
+      }
+    }
+    if (item.price != null && !isPlausiblePrice(item.price, item.title || "")) {
+      item.price = null;
+      priceCleared += 1;
+    }
+  }
+  const next = saveWatchlist({
+    ...wl,
+    updatedAt: nowIso(),
+    items: wl.items,
+  });
+  return { watchlist: next, priceCleared, sellerCleared };
+}
+
 function normalizeSeller(s: SellerIntel | null | undefined): SellerIntel | null {
   if (!s || typeof s !== "object") return null;
+  const sellerName = cleanSellerName(s.sellerName ?? null);
+  const sellerId = s.sellerId ?? null;
+  const sellerUrl = s.sellerUrl ?? null;
+  if (!sellerId && !sellerName && !sellerUrl) return null;
   return {
-    sellerId: s.sellerId ?? null,
-    sellerName: s.sellerName ?? null,
-    sellerUrl: s.sellerUrl ?? null,
+    sellerId,
+    sellerName,
+    sellerUrl,
     sellerRating: s.sellerRating ?? null,
     sellerRatingCount: s.sellerRatingCount ?? null,
     sellerPositivePct: s.sellerPositivePct ?? null,
@@ -192,11 +257,20 @@ function mergeSeller(
   prev: SellerIntel | null | undefined,
   next: SellerIntel | null,
 ): SellerIntel | null {
-  if (!next) return prev ?? null;
+  if (!next) {
+    if (!prev) return null;
+    const cleaned = cleanSellerName(prev.sellerName);
+    if (cleaned === prev.sellerName) return prev;
+    return { ...prev, sellerName: cleaned };
+  }
   if (!prev) return next;
+  // 本轮深采带了 sellerId：店名以本轮为准（含 null，用来清掉历史脏名）
+  const sellerName = next.sellerId
+    ? next.sellerName
+    : cleanSellerName(next.sellerName ?? prev.sellerName);
   return {
     sellerId: next.sellerId ?? prev.sellerId,
-    sellerName: next.sellerName ?? prev.sellerName,
+    sellerName,
     sellerUrl: next.sellerUrl ?? prev.sellerUrl,
     sellerRating: next.sellerRating ?? prev.sellerRating,
     sellerRatingCount: next.sellerRatingCount ?? prev.sellerRatingCount,

@@ -1,6 +1,7 @@
 import { Router } from "express";
 import type { AppState, SyncJobStatus } from "../../common/types.js";
 import { saveState } from "../../data/store.js";
+import { requireAdmin } from "../../auth/middleware.js";
 import { listInbox } from "./inbox.js";
 import { processPendingInbox, pullDomain } from "./pipeline.js";
 import { pushAlert } from "./alerts.js";
@@ -9,6 +10,14 @@ import {
   isAssemblySyncRunning,
   runAssemblySync,
 } from "./assembly-sync.js";
+import {
+  auditAllShopGaps,
+  getLastDataBackfill,
+  healthGateComplete,
+  isDataBackfillRunning,
+  runDataBackfill,
+} from "./data-backfill.js";
+import { getHealthGateShopIds } from "../../shops/registry.js";
 
 function overallTone(state: AppState): SyncJobStatus {
   if (!state.noon.enabled) return "warning";
@@ -100,7 +109,7 @@ export function createSyncRouter(getState: () => AppState) {
     res.json({ data: getState().syncAlerts });
   });
 
-  router.post("/alerts/clear", (_req, res) => {
+  router.post("/alerts/clear", requireAdmin, (_req, res) => {
     const state = getState();
     const cleared = state.syncAlerts.length;
     state.syncAlerts = [];
@@ -125,7 +134,7 @@ export function createSyncRouter(getState: () => AppState) {
     res.json({ data: alert });
   });
 
-  router.post("/run/:domain", async (req, res) => {
+  router.post("/run/:domain", requireAdmin, async (req, res) => {
     const domain = req.params.domain;
     const state = getState();
 
@@ -184,7 +193,7 @@ export function createSyncRouter(getState: () => AppState) {
     }
   });
 
-  router.post("/process-inbox", async (_req, res) => {
+  router.post("/process-inbox", requireAdmin, async (_req, res) => {
     const result = await processPendingInbox(getState());
     res.json({ data: result });
   });
@@ -193,7 +202,7 @@ export function createSyncRouter(getState: () => AppState) {
    * 汇总同步：Noon → 影刀广告落盘入库 → 飞书本地域
    * body: { skipNoon?, skipAds?, skipFeishu?, forceIngest?, feishuDocIds? }
    */
-  router.post("/assembly-sync", async (req, res) => {
+  router.post("/assembly-sync", requireAdmin, async (req, res) => {
     if (isAssemblySyncRunning()) {
       res.status(409).json({
         error: "汇总同步正在进行中",
@@ -208,6 +217,7 @@ export function createSyncRouter(getState: () => AppState) {
         skipNoon: Boolean(req.body?.skipNoon),
         skipAds: Boolean(req.body?.skipAds),
         skipFeishu: Boolean(req.body?.skipFeishu),
+        skipOpsDaily: Boolean(req.body?.skipOpsDaily),
         forceIngest: Boolean(req.body?.forceIngest),
         feishuDocIds: Array.isArray(req.body?.feishuDocIds)
           ? req.body.feishuDocIds.map(String)
@@ -238,7 +248,78 @@ export function createSyncRouter(getState: () => AppState) {
     });
   });
 
-  router.post("/alerts/demo-fail", (_req, res) => {
+  /** 各店数据缺口审计（不打外部接口） */
+  router.get("/data-gaps", (_req, res) => {
+    const lookbackDays = Number(_req.query.lookbackDays ?? 90);
+    const audits = auditAllShopGaps(
+      Number.isFinite(lookbackDays) ? lookbackDays : 90,
+    );
+    res.json({
+      data: {
+        /** 仅健康门禁店（默认前两家）齐全才算总览成功 */
+        complete: healthGateComplete(audits),
+        healthGateShopIds: getHealthGateShopIds(),
+        shops: audits,
+      },
+    });
+  });
+
+  /**
+   * 数据补洞：Noon 按域一次覆盖缺口区间；飞书直拉；缺 ads 触发 Playwright。
+   * body: { shopIds?, skipNoon?, skipFeishu?, skipYingdao?|skipAdsRpa?, maxImpexPerShop?, maxImpexTotal? }
+   */
+  router.post("/data-backfill", requireAdmin, async (req, res) => {
+    if (isDataBackfillRunning()) {
+      res.status(409).json({
+        error: "数据补洞正在进行中",
+        data: getLastDataBackfill(),
+      });
+      return;
+    }
+    try {
+      const result = await runDataBackfill({
+        triggeredBy: "manual",
+        shopIds: Array.isArray(req.body?.shopIds)
+          ? req.body.shopIds.map(String)
+          : undefined,
+        skipNoon: Boolean(req.body?.skipNoon),
+        skipFeishu: Boolean(req.body?.skipFeishu),
+        skipYingdao: Boolean(
+          req.body?.skipYingdao ?? req.body?.skipAdsRpa,
+        ),
+        maxImpexPerShop:
+          req.body?.maxImpexPerShop != null
+            ? Number(req.body.maxImpexPerShop)
+            : undefined,
+        maxImpexTotal:
+          req.body?.maxImpexTotal != null
+            ? Number(req.body.maxImpexTotal)
+            : undefined,
+        lookbackDays:
+          req.body?.lookbackDays != null
+            ? Number(req.body.lookbackDays)
+            : undefined,
+      });
+      res.status(result.ok ? 200 : 207).json({
+        data: result,
+        message: result.message,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ error: message });
+    }
+  });
+
+  router.get("/data-backfill/last", (_req, res) => {
+    res.json({
+      data: {
+        running: isDataBackfillRunning(),
+        last: getLastDataBackfill(),
+      },
+    });
+  });
+
+  router.post("/alerts/demo-fail", requireAdmin, (_req, res) => {
     const state = getState();
     const alert = pushAlert(state, {
       level: "danger",

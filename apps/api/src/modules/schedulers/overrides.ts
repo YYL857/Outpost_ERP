@@ -1,7 +1,13 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-export type SchedulerOverrideId = "noon-poller" | "assembly-sync";
+export type SchedulerOverrideId =
+  | "noon-poller"
+  | "assembly-sync"
+  | "store-morning-digest"
+  | "mi-morning-digest"
+  | "pw-keepalive"
+  | "gp-month-close";
 
 export type SchedulersOverrides = {
   /** runtime enable overrides; missing key → fall back to env default */

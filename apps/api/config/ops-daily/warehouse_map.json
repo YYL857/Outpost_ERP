@@ -1,0 +1,5 @@
+{
+  "note": "warehouse_code → channel；与 FLOW pipelines/noon_ops_daily/config/warehouse_map.yaml 共维",
+  "fbn_warehouses": ["RUH01S", "RUH07", "RUH01OS", "JED01"],
+  "default_channel": "supermall"
+}

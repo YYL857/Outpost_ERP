@@ -35,9 +35,13 @@ export type NormalizeDocResult = {
   ok: boolean;
   acceptedCost: number;
   acceptedDims: number;
+  acceptedPurchase?: number;
+  acceptedCash?: number;
   rejected: number;
   costPath?: string;
   dimsPath?: string;
+  purchasePath?: string;
+  cashPath?: string;
   rejectsPath?: string;
   error?: {
     code: string;
@@ -59,6 +63,8 @@ export type NormalizeRunManifest = {
   files: {
     localCost?: string;
     dims?: string;
+    purchase?: string;
+    cash?: string;
   };
   results: NormalizeDocResult[];
   guards: Array<{

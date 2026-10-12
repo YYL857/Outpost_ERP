@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+    <div class="container">
+        <h2>Outpost 约仓 · 自动预约</h2>
+        <div class="button-group" style="margin-bottom:10px">
+            <button id="openCompanionBtn" class="btn btn-secondary" type="button">打开侧栏陪伴助手</button>
+        </div>
+        <div class="ad-banner">约仓成功后自动回填送仓时间到 Outpost 陪伴会话</div>
+        <div class="form-group">
+            <label>仓库代码：</label>
+            <input type="text" id="warehouseInput" class="warehouse-input" placeholder="例如 AUH01S">
+            <p class="hint">请输入页面中存在的仓库代码（区分大小写）</p>
+        </div>
+
+        <div class="form-group">
+            <label>日期（可多选）：</label>
+            <div class="date-picker-row">
+                <button type="button" id="openDatePickerBtn" class="btn btn-date">选择日期</button>
+            </div>
+            <div id="calendarPopover" class="calendar-popover hidden">
+                <div class="calendar-header">
+                    <button type="button" id="prevMonthBtn" class="calendar-nav-btn">‹</button>
+                    <div id="calendarMonthLabel" class="calendar-month-label"></div>
+                    <button type="button" id="nextMonthBtn" class="calendar-nav-btn">›</button>
+                </div>
+                <div class="calendar-weekdays">
+                    <span>日</span>
+                    <span>一</span>
+                    <span>二</span>
+                    <span>三</span>
+                    <span>四</span>
+                    <span>五</span>
+                    <span>六</span>
+                </div>
+                <div id="calendarDays" class="calendar-days"></div>
+                <div class="calendar-actions">
+                    <button type="button" id="clearDatesBtn" class="calendar-action-btn">清空已选</button>
+                    <button type="button" id="closeDatePickerBtn" class="calendar-action-btn calendar-action-primary">完成</button>
+                </div>
+            </div>
+            <div id="selectedDatesList" class="selected-dates-list"></div>
+            <input type="hidden" id="datesInput">
+            <p class="hint">弹出日历后可直接连续多选，已选日期会保留在下方列表中。</p>
+        </div>
+
+        <div class="form-group">
+            <label>时间范围（页面时间段的开始时间必须在此范围内才会抢）：</label>
+            <div class="time-range-row">
+                <select id="timeRangeStart" class="time-range-select">
+                    <option value="10am">10am</option>
+                    <option value="12pm">12pm</option>
+                    <option value="2pm">2pm</option>
+                    <option value="4pm">4pm</option>
+                    <option value="6pm">6pm</option>
+                    <option value="8pm">8pm</option>
+                    <option value="9pm">9pm</option>
+                </select>
+                <span class="time-range-sep">至</span>
+                <select id="timeRangeEnd" class="time-range-select">
+                    <option value="12pm">12pm</option>
+                    <option value="2pm">2pm</option>
+                    <option value="4pm">4pm</option>
+                    <option value="6pm" selected>6pm</option>
+                    <option value="8pm">8pm</option>
+                    <option value="9pm">9pm</option>
+                    <option value="10pm">10pm</option>
+                </select>
+            </div>
+            <p class="hint">只要时间段开始时间在此范围内，无论结束时间是多少都会抢。</p>
+        </div>
+
+        <div class="form-group">
+            <label>优先开始时间（可选，优先抢这个时间开始的时间段）：</label>
+            <select id="preferredStart" class="time-range-select">
+                <option value="">无偏好，抢范围内第一个</option>
+                <option value="10am">10am</option>
+                <option value="12pm">12pm</option>
+                <option value="2pm">2pm</option>
+                <option value="4pm">4pm</option>
+                <option value="6pm">6pm</option>
+                <option value="8pm">8pm</option>
+                <option value="9pm">9pm</option>
+            </select>
+            <p class="hint">设置后优先选此时间开始的时间段，找不到则退回抢范围内其他时间段。</p>
+        </div>
+
+        <div class="button-group">
+            <button id="startBtn" class="btn btn-primary">开始监控</button>
+            <button id="stopBtn" class="btn btn-secondary" disabled>停止</button>
+            <button id="downloadLogBtn" class="btn btn-secondary">下载日志</button>
+        </div>
+
+        <!-- <div id="status" class="status">就绪</div> -->
+        <div id="log" class="log"></div>
+    </div>
+
+    <script src="site-config.js"></script>
+    <script src="popup.js"></script>
+</body>
+</html>

@@ -118,11 +118,20 @@ const r = await runAssemblySync(state, {
   skipNoon: true,
   skipAds: true,
   skipFeishu: true,
+  skipOpsDaily: true,
 });
 
 assert(r.ok === true, "skip-all ok");
-assert(r.stages.length === 5, "5 stages");
+assert(r.stages.length === 8, `8 stages incl ops_daily got=${r.stages.length}`);
 assert(r.stages.every((s) => s.skipped), "all skipped");
+assert(
+  r.stages.some((s) => s.name === "wiki_graph"),
+  "wiki_graph stage present",
+);
+assert(
+  r.stages.some((s) => s.name === "ops_daily"),
+  "ops_daily stage present",
+);
 assert(getLastAssemblySync()?.runId === r.runId, "last persisted in memory");
 assert(!isAssemblySyncRunning(), "not running after");
 
@@ -131,11 +140,13 @@ const p1 = runAssemblySync(state, {
   skipNoon: true,
   skipAds: true,
   skipFeishu: true,
+  skipOpsDaily: true,
 });
 const p2 = runAssemblySync(state, {
   skipNoon: true,
   skipAds: true,
   skipFeishu: true,
+  skipOpsDaily: true,
 });
 const [a, b] = await Promise.all([p1, p2]);
 assert(a.runId !== b.runId, "queued two runs");

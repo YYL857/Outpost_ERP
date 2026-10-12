@@ -8,28 +8,13 @@ import type {
   CatalogItem,
   FeeEstimate,
   FeeSnapshot,
+  FeishuOpsSnapshot,
+  PurchaseLine,
   SalesFact,
   SkuDims,
   SkuLocalCost,
 } from "../../common/types.js";
-
-function latestSalesPrice(facts: SalesFact[], partnerSku: string): {
-  price: number;
-  updatedAt: string;
-} {
-  let price = 0;
-  let updatedAt = "";
-  let bestDate = "";
-  for (const f of facts) {
-    if (f.partnerSku !== partnerSku) continue;
-    if (f.date >= bestDate && f.units > 0 && f.amount > 0) {
-      bestDate = f.date;
-      price = Math.round((f.amount / f.units) * 100) / 100;
-    }
-    if (f.updatedAt > updatedAt) updatedAt = f.updatedAt;
-  }
-  return { price, updatedAt };
-}
+import type { CatalogLookup } from "./lookup.js";
 
 function maxIso(values: Array<string | undefined | null>): string {
   let best = "";
@@ -39,16 +24,41 @@ function maxIso(values: Array<string | undefined | null>): string {
   return best || new Date().toISOString();
 }
 
+function orphanDisplayTitle(
+  partnerSku: string,
+  state: {
+    feishuOpsSnapshots?: FeishuOpsSnapshot[];
+    purchaseLines?: PurchaseLine[];
+  },
+): { title: string; from: "feishu" | "purchase" | "sku" } {
+  const opsName = (state.feishuOpsSnapshots ?? [])
+    .find((o) => o.partnerSku === partnerSku)
+    ?.productName?.trim();
+  if (opsName) return { title: opsName, from: "feishu" };
+
+  const purchName = (state.purchaseLines ?? [])
+    .find((p) => p.partnerSku === partnerSku)
+    ?.productName?.trim();
+  if (purchName) return { title: purchName, from: "purchase" };
+
+  return { title: `（未在线 Catalog）${partnerSku}`, from: "sku" };
+}
+
 /** 官方 catalog ∪ 有平台经营痕迹的孤儿行（销量/费用/广告；不含纯飞书未上架） */
-export function listCatalogItemsForAssembly(state: {
-  catalog: CatalogItem[];
-  salesFacts: SalesFact[];
-  feeSnapshots: FeeSnapshot[];
-  feeEstimates?: FeeEstimate[];
-  skuLocalCosts: SkuLocalCost[];
-  skuDims: SkuDims[];
-  adsFacts?: AdsFact[];
-}): CatalogItem[] {
+export function listCatalogItemsForAssembly(
+  state: {
+    catalog: CatalogItem[];
+    salesFacts: SalesFact[];
+    feeSnapshots: FeeSnapshot[];
+    feeEstimates?: FeeEstimate[];
+    skuLocalCosts: SkuLocalCost[];
+    skuDims: SkuDims[];
+    adsFacts?: AdsFact[];
+    feishuOpsSnapshots?: FeishuOpsSnapshot[];
+    purchaseLines?: PurchaseLine[];
+  },
+  lookup?: CatalogLookup,
+): CatalogItem[] {
   const known = new Set(state.catalog.map((c) => c.partnerSku));
   const orphans = new Set<string>();
   const add = (sku: string | undefined) => {
@@ -64,25 +74,53 @@ export function listCatalogItemsForAssembly(state: {
 
   if (orphans.size === 0) return state.catalog;
 
+  const feeBySku = lookup?.feeBySku;
+  const costBySku = lookup?.costBySku;
+  const dimsBySku = lookup?.dimsBySku;
+  const latestSales = lookup?.latestSalesBySku;
+
   const extras: CatalogItem[] = [...orphans]
     .sort((a, b) => a.localeCompare(b))
     .map((partnerSku) => {
-      const fromSales = latestSalesPrice(state.salesFacts, partnerSku);
-      const fee = state.feeSnapshots.find((f) => f.partnerSku === partnerSku);
-      const cost = state.skuLocalCosts.find((c) => c.partnerSku === partnerSku);
-      const dims = state.skuDims.find((d) => d.partnerSku === partnerSku);
+      const fromSales = latestSales?.get(partnerSku) ?? {
+        price: 0,
+        updatedAt: "",
+      };
+      let price = fromSales.price;
+      let salesUpdated = fromSales.updatedAt;
+      if (!latestSales) {
+        let bestDate = "";
+        for (const f of state.salesFacts) {
+          if (f.partnerSku !== partnerSku) continue;
+          if (f.date >= bestDate && f.units > 0 && f.amount > 0) {
+            bestDate = f.date;
+            price = Math.round((f.amount / f.units) * 100) / 100;
+          }
+          if (f.updatedAt > salesUpdated) salesUpdated = f.updatedAt;
+        }
+      }
+      const fee =
+        feeBySku?.get(partnerSku) ??
+        state.feeSnapshots.find((f) => f.partnerSku === partnerSku);
+      const cost =
+        costBySku?.get(partnerSku) ??
+        state.skuLocalCosts.find((c) => c.partnerSku === partnerSku);
+      const dims =
+        dimsBySku?.get(partnerSku)?.[0] ??
+        state.skuDims.find((d) => d.partnerSku === partnerSku);
+      const named = orphanDisplayTitle(partnerSku, state);
       return {
         partnerSku,
-        title: `（未在线 Catalog）${partnerSku}`,
+        title: named.title,
         isActive: false,
         noonSku: "",
         imageUrl: "",
-        price: fromSales.price,
+        price,
         currency: "SAR",
         listingType: "orphan",
         source: "NOON" as const,
         updatedAt: maxIso([
-          fromSales.updatedAt,
+          salesUpdated,
           fee?.updatedAt,
           cost?.updatedAt,
           dims?.updatedAt,

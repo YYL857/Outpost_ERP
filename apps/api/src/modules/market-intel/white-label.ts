@@ -315,24 +315,59 @@ const BRAND_TOKEN_SKIP = new Set([
   "sportflex", "ecg", "waterproof", "rapid", "fdm", "printer",
   "best", "mega", "faster", "deal", "sale", "offer", "offers", "mobile",
   "mobiles", "seller", "bestsellers", "bestseller", "capture", "enjoy",
-  "better", "products", "all", "this", "by", "from",
+  "better", "products", "all", "this", "by", "from", "your", "our", "no",
+  "hd", "next", "gen", "tvs", "tv", "charging", "brand", "football",
+  "projector", "projectors", "portable", "home", "kids", "lunch", "bag",
+  "zoom", "love", "princess", "disney", "power", "living", "refined",
+  "everyday", "chargers", "charger",
+  "shop", "exclusive", "series", "qled", "plus", "mah", "recorder",
+  // 店名/UI/开店时间误写入（历史脏 pending）
+  "positive", "global", "every", "location", "december", "dream", "future",
+  "m2", "customers", "customer", "arabic", "profile", "store", "official",
+  "technology", "ict",
 ]);
 
-export function guessBrandToken(text: string | null | undefined): string | null {
-  const s = String(text || "").trim();
-  if (!s) return null;
-  const parts = s
-    .replace(/https?:\/\/\S+/g, "")
-    .split(/[\s|/,_-]+/)
-    .map((x) => x.trim())
-    .filter((x) => /^[A-Za-z][A-Za-z0-9+]{1,24}$/.test(x));
+const BRAND_SLOGAN_RE =
+  /\b(brand|life|living|enjoy|your|next[- ]?gen|no\.?\s*1|number\s*one|world\s*cup|everyday|refined|series|exclusive|qled)\b/i;
+
+/** 促销卡标题不当品牌 / 不当白牌样本 */
+export function isPromoProductTitle(title: string | null | undefined): boolean {
+  return /^(mega\s*deal|deal\b|live\s*check|\[yd-demo\])/i.test(
+    String(title || "").trim(),
+  );
+}
+
+function tokenFromParts(parts: string[]): string | null {
   for (const p of parts) {
     const t = normBrand(p);
     if (!t || t.length < 2 || BRAND_TOKEN_SKIP.has(t)) continue;
     if (/^[a-z]*\d{3,}/i.test(t) || /\d{3,}/.test(t)) continue;
+    if (!/^[a-z][a-z0-9+]{1,24}$/.test(t)) continue;
     return t;
   }
   return null;
+}
+
+export function guessBrandToken(text: string | null | undefined): string | null {
+  const raw = String(text || "").replace(/https?:\/\/\S+/g, "").trim();
+  if (!raw || isPromoProductTitle(raw)) return null;
+
+  // 「ZONBON: smart living」→ 只取冒号左侧品牌
+  const colon = raw.match(
+    /^([A-Za-z][A-Za-z0-9+ .&'-]{0,32}?)\s*[:：]\s*.+$/,
+  );
+  if (colon) {
+    return tokenFromParts(colon[1]!.split(/[\s|/,_-]+/));
+  }
+  // 「Power,Refined」这类逗号 slogan
+  if (/^[A-Za-z]{2,20},[A-Za-z]{2,20}$/.test(raw)) return null;
+
+  if (BRAND_SLOGAN_RE.test(raw)) return null;
+  const parts = raw
+    .split(/[\s|/,_-]+/)
+    .map((x) => x.trim())
+    .filter((x) => /^[A-Za-z][A-Za-z0-9+]{1,24}$/.test(x));
+  return tokenFromParts(parts);
 }
 
 export function classifyBrandTier(
@@ -380,6 +415,8 @@ export function notePendingBrand(opts: {
 }) {
   const token = normBrand(opts.token);
   if (!token || token.length < 2) return;
+  if (BRAND_TOKEN_SKIP.has(token) || /^[a-z]*\d{3,}/i.test(token)) return;
+  if (isPromoProductTitle(opts.exampleTitle)) return;
   const reg = loadBrandRegistry();
   const cat = opts.categoryId || "_uncategorized";
   if (
@@ -436,6 +473,50 @@ export function notePendingBrand(opts: {
   bucket.pendingReview.sort((a, b) => b.hits - a.hits);
   bucket.pendingReview = bucket.pendingReview.slice(0, 500);
   saveBrandRegistry(reg);
+}
+
+/** 清掉历史促销词 / 型号 token / skip 表噪声 */
+export function prunePendingBrandNoise(categoryId?: string): number {
+  const reg = loadBrandRegistry();
+  let removed = 0;
+  const cats = reg.categories || {};
+  for (const [cid, bucket] of Object.entries(cats)) {
+    if (categoryId && cid !== categoryId) continue;
+    if (!bucket?.pendingReview?.length) continue;
+    const before = bucket.pendingReview.length;
+    bucket.pendingReview = bucket.pendingReview.filter((p) => {
+      const t = normBrand(p.token);
+      if (!t || t.length < 2) return false;
+      if (BRAND_TOKEN_SKIP.has(t)) return false;
+      if (/^[a-z]*\d{3,}/i.test(t) || /\d{3,}/.test(t)) return false;
+      // 短型号噪声：a1 / m2 / x9
+      if (/^[a-z]\d{1,2}$/i.test(t)) return false;
+      if (BRAND_SLOGAN_RE.test(t)) return false;
+      return true;
+    });
+    removed += before - bucket.pendingReview.length;
+  }
+  if (removed > 0) saveBrandRegistry(reg);
+  return removed;
+}
+
+/**
+ * 从 pending 删除，不写入白板/避开。
+ * 用于脏 token、信息不足、或「既不跟也不拉黑」的丢弃。
+ */
+export function discardPendingBrand(token: string, categoryId?: string) {
+  const t = normBrand(token);
+  const reg = loadBrandRegistry();
+  const cats = categoryId
+    ? [categoryId]
+    : Object.keys(reg.categories || {});
+  if (!cats.length) cats.push("_uncategorized");
+
+  for (const cid of cats) {
+    const b = ensureCategoryBucket(reg, cid);
+    b.pendingReview = b.pendingReview.filter((p) => p.token !== t);
+  }
+  return saveBrandRegistry(reg);
 }
 
 export function promotePendingBrand(

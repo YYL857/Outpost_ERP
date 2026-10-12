@@ -13,6 +13,11 @@ import { getFeishuRawDir } from "../config.js";
 import { FeishuError, formatFeishuError, isFeishuError } from "../errors.js";
 import type { FeishuPullRunManifest, FeishuRawSnapshot } from "../types.js";
 import { toCsv } from "./cells.js";
+import { normalizeAccountsSnapshot } from "./accounts.js";
+import type {
+  NormalizedCashEntry,
+  NormalizedPurchaseLine,
+} from "./accounts.js";
 import { normalizePackingSnapshot } from "./packing.js";
 import { normalizeProductSnapshot } from "./product.js";
 import type {
@@ -173,7 +178,7 @@ export function normalizeFeishuRun(opts?: {
     ) as FeishuPullRunManifest;
     pullDocIds = pm.results.filter((r) => r.ok).map((r) => r.docId);
   }
-  const supported = new Set(["product", "packing"]);
+  const supported = new Set(["product", "packing", "accounts"]);
   const want = opts?.docIds?.length
     ? opts.docIds
     : pullDocIds.filter((id) => supported.has(id));
@@ -186,6 +191,8 @@ export function normalizeFeishuRun(opts?: {
   const dateStamp = startedAt.slice(0, 10);
   const allCosts: NormalizedLocalCostRow[] = [];
   const allDims: NormalizedDimsRow[] = [];
+  const allPurchases: NormalizedPurchaseLine[] = [];
+  const allCash: NormalizedCashEntry[] = [];
   const dimSeen = new Set<string>();
   const results: NormalizeDocResult[] = [];
   const guards: NormalizeRunManifest["guards"] = [];
@@ -210,7 +217,7 @@ export function normalizeFeishuRun(opts?: {
           code: "CONFIG_INVALID",
           stage: "normalize",
           message: `M3 未实现 doc=${docId}`,
-          hint: "当前支持 product / packing；daily/accounts 后续模块",
+          hint: "当前支持 product / packing / accounts；daily 走日报独立管线",
         },
       });
       continue;
@@ -250,8 +257,7 @@ export function normalizeFeishuRun(opts?: {
           rejected: built.rejects.length,
           rejectsPath,
         });
-      } else {
-        // packing：仅 dims
+      } else if (docId === "packing") {
         const built = normalizePackingSnapshot(snap, startedAt);
         const rejectsPath = join(docDir, "rejects.jsonl");
         writeText(
@@ -269,6 +275,27 @@ export function normalizeFeishuRun(opts?: {
           ok: true,
           acceptedCost: 0,
           acceptedDims,
+          rejected: built.rejects.length,
+          rejectsPath,
+        });
+      } else {
+        // accounts：采购 + 现金流水
+        const built = normalizeAccountsSnapshot(snap, startedAt);
+        const rejectsPath = join(docDir, "rejects.jsonl");
+        writeText(
+          rejectsPath,
+          built.rejects.map((x) => JSON.stringify(x)).join("\n") +
+            (built.rejects.length ? "\n" : ""),
+        );
+        allPurchases.push(...built.purchases);
+        allCash.push(...built.cash);
+        results.push({
+          docId,
+          ok: true,
+          acceptedCost: 0,
+          acceptedDims: 0,
+          acceptedPurchase: built.purchases.length,
+          acceptedCash: built.cash.length,
           rejected: built.rejects.length,
           rejectsPath,
         });
@@ -337,6 +364,73 @@ export function normalizeFeishuRun(opts?: {
       r.dimsPath = path;
     }
   }
+  if (allPurchases.length) {
+    const name = `feishu_purchase_${dateStamp}.csv`;
+    const path = join(outDir, name);
+    writeText(
+      path,
+      toCsv(
+        [
+          "id",
+          "partnerSku",
+          "productName",
+          "qty",
+          "unitCost",
+          "amount",
+          "supplier",
+          "purchasedAt",
+          "status",
+          "remark",
+          "sheetTitle",
+          "updatedAt",
+          "source",
+          "orderId",
+          "trackingNo",
+          "transitStatus",
+          "etaDate",
+        ],
+        allPurchases.map((r) => ({
+          ...r,
+          purchasedAt: r.purchasedAt ?? "",
+          etaDate: r.etaDate ?? "",
+        })),
+      ),
+    );
+    files.purchase = path;
+    for (const r of results.filter((x) => x.docId === "accounts" && x.ok)) {
+      r.purchasePath = path;
+      r.acceptedPurchase = allPurchases.length;
+    }
+  }
+  if (allCash.length) {
+    const name = `feishu_cash_${dateStamp}.csv`;
+    const path = join(outDir, name);
+    writeText(
+      path,
+      toCsv(
+        [
+          "id",
+          "kind",
+          "amount",
+          "category",
+          "occurredAt",
+          "remark",
+          "sheetTitle",
+          "updatedAt",
+          "source",
+        ],
+        allCash.map((r) => ({
+          ...r,
+          occurredAt: r.occurredAt ?? "",
+        })),
+      ),
+    );
+    files.cash = path;
+    for (const r of results.filter((x) => x.docId === "accounts" && x.ok)) {
+      r.cashPath = path;
+      r.acceptedCash = allCash.length;
+    }
+  }
 
   const finishedAt = nowFn().toISOString();
   const manifest: NormalizeRunManifest = {
@@ -351,6 +445,27 @@ export function normalizeFeishuRun(opts?: {
     guards,
   };
   writeText(join(outDir, "normalize-manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
+
+  // 分域 normalize 时保留上次 cost/dims/purchase/cash 路径，避免 accounts-only 冲掉产品表产物
+  const lastPath = join(outRoot, "last-normalize.json");
+  let prevFiles: NormalizeRunManifest["files"] = {};
+  if (existsSync(lastPath)) {
+    try {
+      const prev = JSON.parse(readFileSync(lastPath, "utf8")) as {
+        files?: NormalizeRunManifest["files"];
+      };
+      prevFiles = prev.files ?? {};
+    } catch {
+      prevFiles = {};
+    }
+  }
+  const mergedFiles: NormalizeRunManifest["files"] = {
+    localCost: files.localCost ?? prevFiles.localCost,
+    dims: files.dims ?? prevFiles.dims,
+    purchase: files.purchase ?? prevFiles.purchase,
+    cash: files.cash ?? prevFiles.cash,
+  };
+
   writeText(
     join(outRoot, "last-normalize.json"),
     JSON.stringify(
@@ -360,7 +475,7 @@ export function normalizeFeishuRun(opts?: {
         finishedAt,
         okCount: results.filter((r) => r.ok).length,
         failCount: results.filter((r) => !r.ok).length,
-        files,
+        files: mergedFiles,
         results,
         manifestPath: join(outDir, "normalize-manifest.json"),
       },
@@ -369,5 +484,5 @@ export function normalizeFeishuRun(opts?: {
     ) + "\n",
   );
 
-  return manifest;
+  return { ...manifest, files: mergedFiles };
 }

@@ -91,6 +91,8 @@ export type CategoryFitnessShortItem = {
   brandTier: BrandTier;
   isBestSeller: boolean;
   isAd: boolean;
+  sellerId?: string | null;
+  sellerName?: string | null;
 };
 
 export type CategoryFitnessReport = {
@@ -110,7 +112,13 @@ export type CategoryFitnessReport = {
     soldRecentlyCoverage: number;
     priceMedianWhite: number | null;
     aspInSweetShare: number | null;
+    /** 白牌有价样本中「像真实客单」的占比 */
+    priceCleanShare?: number | null;
     bestSellerCount: number;
+    /** 白牌深采里头部卖家占比 */
+    sellerTopShare?: number | null;
+    sellerTopLabel?: string | null;
+    sellerCoverage?: number | null;
   };
   thresholds: CategoryFitnessThresholds;
   shortlist: CategoryFitnessShortItem[];
@@ -237,4 +245,131 @@ export type DiscoveredProduct = {
   cardTags?: string[];
   seller?: SellerIntel | null;
   reviews?: ReviewItem[];
+};
+
+/** 竞品盯价 / 来源注册（P0） */
+
+export type ConfidenceTier = "high" | "mid" | "low";
+export type ObservationSource = "extension" | "yingdao" | "manual";
+export type ParseMethod = "dom" | "json_ld" | "regex" | "llm" | "manual";
+
+export type PriceObservation = {
+  id: string;
+  productKey: string;
+  url: string;
+  title: string;
+  price: number | null;
+  currency: string;
+  promoText: string | null;
+  inStock: boolean | null;
+  confidence: number;
+  tier: ConfidenceTier;
+  source: ObservationSource;
+  parseMethod: ParseMethod;
+  flags: string[];
+  capturedAt: string;
+};
+
+export type MonitorTarget = {
+  productKey: string;
+  url: string;
+  title: string;
+  note?: string;
+  addedAt: string;
+  addedFrom: "watchlist" | "manual" | "extension";
+  status: "active" | "paused";
+  lastPrice: number | null;
+  lastConfidence: number | null;
+  lastCapturedAt: string | null;
+  lastTier: ConfidenceTier | null;
+};
+
+export type MonitorPoolFile = {
+  version: 1;
+  market: MarketCode;
+  updatedAt: string;
+  items: MonitorTarget[];
+  /** 待二次确认的价变（同向再确认才出告警） */
+  pendingChanges: PendingPriceChange[];
+};
+
+export type PendingPriceChange = {
+  productKey: string;
+  fromPrice: number;
+  toPrice: number;
+  direction: "down" | "up";
+  firstObsId: string;
+  firstCapturedAt: string;
+};
+
+export type PriceAlert = {
+  id: string;
+  productKey: string;
+  url: string;
+  title: string;
+  fromPrice: number;
+  toPrice: number;
+  changePct: number;
+  direction: "down" | "up";
+  confirmedAt: string;
+  observationIds: [string, string];
+  status: "open" | "acked";
+  /** 仅 high 可驱动告警；写入时冗余便于 UI */
+  tier: ConfidenceTier;
+};
+
+export type IntelSourceType =
+  | "marketplace"
+  | "search"
+  | "social"
+  | "news"
+  | "video"
+  | "classified"
+  | "other";
+export type IntelSourceHow =
+  | "api"
+  | "rss"
+  | "manual_paste"
+  | "extension"
+  | "yingdao";
+export type IntelSourceStatus = "active" | "trial" | "watch" | "retired";
+export type IntelSourceTopic =
+  | "pain"
+  | "demand"
+  | "aesthetic"
+  | "taboo"
+  | "sentiment"
+  | "macro";
+
+export type IntelSource = {
+  sourceId: string;
+  title: string;
+  type: IntelSourceType;
+  locale: string;
+  howWeGet: IntelSourceHow;
+  topics: IntelSourceTopic[];
+  score: number;
+  status: IntelSourceStatus;
+  note?: string;
+  updatedAt: string;
+};
+
+export type SourceRegistryFile = {
+  version: 1;
+  market: MarketCode;
+  updatedAt: string;
+  sources: IntelSource[];
+};
+
+export type SourceSnippet = {
+  id: string;
+  sourceId: string;
+  title: string | null;
+  text: string;
+  url: string | null;
+  topics: IntelSourceTopic[];
+  confidence: number;
+  tier: ConfidenceTier;
+  capturedAt: string;
+  flags: string[];
 };

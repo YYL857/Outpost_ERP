@@ -5,7 +5,11 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { FeishuError } from "./errors.js";
-import { resolveSpreadsheetToken } from "./link.js";
+import {
+  parseFeishuDocUrl,
+  resolveBitableRef,
+  resolveSpreadsheetToken,
+} from "./link.js";
 import type {
   FeishuDocRef,
   FeishuDocsConfig,
@@ -104,11 +108,79 @@ function normalizeDoc(raw: unknown, index: number): FeishuDocRef {
   const url = o.url != null ? String(o.url) : undefined;
   const spreadsheetToken =
     o.spreadsheetToken != null ? String(o.spreadsheetToken) : undefined;
-  const resolved = resolveSpreadsheetToken({ id, url, spreadsheetToken });
+  const bitableAppToken =
+    o.bitableAppToken != null ? String(o.bitableAppToken).trim() : undefined;
+  const bitableTableId =
+    o.bitableTableId != null ? String(o.bitableTableId).trim() : undefined;
+  const wikiToken =
+    o.wikiToken != null ? String(o.wikiToken).trim() : undefined;
+
+  const wantBitable =
+    String(o.kind ?? "").trim() === "bitable" ||
+    Boolean(bitableAppToken) ||
+    Boolean(bitableTableId) ||
+    (url?.includes("table=") ?? false) ||
+    (url?.includes("/base/") ?? false);
 
   const sheetTitles = Array.isArray(o.sheetTitles)
     ? o.sheetTitles.map((x) => String(x).trim()).filter(Boolean)
     : undefined;
+
+  if (wantBitable) {
+    const bitable = resolveBitableRef({
+      id,
+      url,
+      bitableAppToken,
+      bitableTableId,
+      wikiToken,
+    });
+    return {
+      id,
+      label: label || id,
+      kind: "bitable",
+      url: bitable.url ?? url,
+      bitableAppToken: bitable.bitableAppToken,
+      bitableTableId: bitable.bitableTableId,
+      wikiToken: bitable.wikiToken,
+      sheetTitles,
+      targetDomain,
+      enabled: o.enabled === false ? false : true,
+    };
+  }
+
+  /** wiki 形态电子表格：拉取时用 get_node 换 spreadsheetToken */
+  const kindRaw = String(o.kind ?? "").trim();
+  const wikiFromUrl =
+    url?.includes("/wiki/") && !url.includes("table=")
+      ? parseFeishuDocUrl(url).token
+      : undefined;
+  const resolvedWiki = wikiToken || wikiFromUrl;
+  if (
+    (kindRaw === "wiki" || Boolean(resolvedWiki)) &&
+    !spreadsheetToken?.trim()
+  ) {
+    if (!resolvedWiki) {
+      throw new FeishuError(
+        `文档 ${id} 缺少 wikiToken / wiki url`,
+        "DOC_TOKEN_MISSING",
+        "config",
+        { docId: id },
+        "填写 wiki 链接或 wikiToken；拉取时会解析为电子表格 token",
+      );
+    }
+    return {
+      id,
+      label: label || id,
+      kind: "wiki",
+      url,
+      wikiToken: resolvedWiki,
+      sheetTitles,
+      targetDomain,
+      enabled: o.enabled === false ? false : true,
+    };
+  }
+
+  const resolved = resolveSpreadsheetToken({ id, url, spreadsheetToken });
 
   return {
     id,
@@ -116,6 +188,7 @@ function normalizeDoc(raw: unknown, index: number): FeishuDocRef {
     kind: resolved.kind,
     url: resolved.url ?? url,
     spreadsheetToken: resolved.token,
+    wikiToken: resolvedWiki,
     sheetTitles,
     targetDomain,
     enabled: o.enabled === false ? false : true,
@@ -237,7 +310,12 @@ export function summarizeConfig(cfg: FeishuDocsConfig) {
       kind: d.kind,
       tokenMasked: d.spreadsheetToken
         ? maskSecret(d.spreadsheetToken)
-        : "(missing)",
+        : d.bitableAppToken
+          ? maskSecret(d.bitableAppToken)
+          : d.wikiToken
+            ? `wiki:${maskSecret(d.wikiToken)}`
+            : "(missing)",
+      tableId: d.bitableTableId ?? null,
       targetDomain: d.targetDomain,
       sheetTitles: d.sheetTitles ?? "(all)",
     })),

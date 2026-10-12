@@ -1,0 +1,48 @@
+{
+  "cliPath": "C:\\Program Files\\ShadowBot\\shadowbot.shell-cli.exe",
+  "apps": {
+    "market-intel": {
+      "appId": "7d24894c-ca55-4fc6-a51d-ac4aae4bde89",
+      "appName": "前哨-Noon沙特-市场情报投递",
+      "defaultWait": "45m0s",
+      "note": "生产仍用影刀（买家商城前台 / 市场情报）；耗材 Sold Recently 复用本应用"
+    },
+    "ads-export": {
+      "appId": "89f3d607-6fbd-4709-9c6d-d37ee91871b2",
+      "appName": "NOON广告投入导出工作流",
+      "defaultWait": "25m0s",
+      "deprecated": true,
+      "note": "生产已改 Playwright job ads；仅手工可跑"
+    },
+    "noon-keepalive": {
+      "appId": "3e7a78cb-ff57-4b2a-b0cd-f68187a46ae7",
+      "appName": "影刀浏览器noon保活",
+      "defaultWait": "10m0s",
+      "deprecated": true,
+      "note": "生产已改 Playwright job keepalive"
+    },
+    "noon-align": {
+      "appId": "fad658bc-29a5-4106-832b-4de0e4a7d1fd",
+      "appName": "NOON后台链路对齐",
+      "defaultWait": "30m0s",
+      "note": "非日更工具链；归档，需要时再迁 Playwright"
+    },
+    "fbn-stock": {
+      "appId": "",
+      "appName": "库存数量查询链路",
+      "flowDir": "D:\\YingDao\\Flows\\outpost_noon_fbn_stock_export",
+      "defaultWait": "25m0s",
+      "deprecated": true,
+      "note": "下岗：分仓以 Impex ledgerdetailedview 为准；不做爬虫。inbox 仅人工验数"
+    },
+    "sales-export": {
+      "appId": "7f8690f4-1903-407b-a95f-6914450c796c",
+      "appName": "N1、N2店铺销量查询链路",
+      "flowDir": "D:\\YingDao\\Flows\\outpost_noon_sales_export",
+      "defaultWait": "25m0s",
+      "deprecated": true,
+      "note": "生产已改 Playwright job sales；手工可跑影刀"
+    }
+  },
+  "notes": "生产 RPA 见 docs/PW_RPA_PLATFORM.md。market-intel/consumables 暂留影刀。"
+}

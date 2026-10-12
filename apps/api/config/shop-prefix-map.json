@@ -1,0 +1,35 @@
+{
+  "note": "PSKU 店前缀 ↔ Noon 店铺（约仓 URL 的 project=）",
+  "shops": [
+    {
+      "prefix": "N1",
+      "label": "店1",
+      "name": "HUI Beauty",
+      "projectCode": "PRJ396770"
+    },
+    {
+      "prefix": "N2",
+      "label": "店2",
+      "name": "HFY-KSA",
+      "projectCode": "PRJ482387"
+    },
+    {
+      "prefix": "N3",
+      "label": "店3",
+      "name": "Glam Bag Collection",
+      "projectCode": "PRJ488078"
+    },
+    {
+      "prefix": "N4",
+      "label": "店4",
+      "name": "mmm",
+      "projectCode": "PRJ595165"
+    }
+  ],
+  "map": {
+    "N1": "PRJ396770",
+    "N2": "PRJ482387",
+    "N3": "PRJ488078",
+    "N4": "PRJ595165"
+  }
+}

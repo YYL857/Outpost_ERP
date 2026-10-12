@@ -14,10 +14,20 @@ scripts/noon-discover/out/
 *.p12
 *credentials*sensitive*
 noon-session/
+apps/api/config/forwarder-portals.credentials.json
 
 # local secrets
 DS-key.txt
 
+# Listing 宣传图投递箱（本地 runtime）
+.tmp_listing_promo_inbox/
+
+# local scratch / promo / probe outputs
+.tmp_*/
+.tmp_*.json
+**/__pycache__/
+*.pyc
+apps/api/scripts/_out/
 
 # local Feishu doc IDs
 apps/api/config/feishu.docs.json

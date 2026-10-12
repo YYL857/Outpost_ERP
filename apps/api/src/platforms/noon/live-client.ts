@@ -20,6 +20,7 @@ import {
   parseCatalogEstimatedFees,
   parseFeesContent,
   parseFbnDimsContent,
+  parseInvoicesContent,
   parseOrdersContent,
   parseSalesContent,
   parseStockContent,
@@ -27,10 +28,12 @@ import {
   type CatalogFeeEstimateDto,
   type FbnDimsDto,
 } from "./portal/parsers.js";
+import { batchGetLivePrices, overlayCatalogDtoPrices } from "./pricing.js";
 import type {
   NoonCatalogDto,
   NoonClient,
   NoonFeeDto,
+  NoonInvoiceDto,
   NoonOrderDto,
   NoonSalesDto,
   NoonStockDto,
@@ -197,12 +200,28 @@ export class LiveNoonClient implements NoonClient {
 
     this.stockHints = [...hintMap.values()];
     this.feeEstimateHints = [...feeMap.values()];
-    return [...merged.values()];
+    const rows = [...merged.values()];
+    try {
+      const live = await batchGetLivePrices(
+        this.connection,
+        rows.map((r) => r.partner_sku),
+        country,
+      );
+      return overlayCatalogDtoPrices(rows, live, new Date().toISOString());
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn("[live-noon] catalog live price overlay skipped:", msg.slice(0, 200));
+      return rows;
+    }
   }
 
   /** Impex product views & sales → salesFacts（Catalog GMV 列） */
   async fetchSalesSince(since: string | null): Promise<NoonSalesDto[]> {
-    const range = orderDateRange(since);
+    const lookback = Math.max(
+      30,
+      Number(process.env.OUTPOST_NOON_SALES_LOOKBACK_DAYS ?? 90) || 90,
+    );
+    const range = orderDateRange(since, lookback);
     const country = (this.connection.countryCode || "sa").toLowerCase();
     const lang = (process.env.OUTPOST_NOON_LANG || "en").trim().toLowerCase();
     const { csv } = await runImpexExportCsv(
@@ -225,6 +244,19 @@ export class LiveNoonClient implements NoonClient {
       { ...range, country, lang },
     );
     return parseFeesContent(csv, "csv");
+  }
+
+  /** Impex invoicesandcreditnotes → invoiceDocs（不占 SyncDomain，按需拉取） */
+  async fetchInvoicesSince(since: string | null): Promise<NoonInvoiceDto[]> {
+    const range = orderDateRange(since);
+    const country = (this.connection.countryCode || "sa").toLowerCase();
+    const lang = (process.env.OUTPOST_NOON_LANG || "en").trim().toLowerCase();
+    const { csv } = await runImpexExportCsv(
+      this.connection,
+      IMPEX_EXPORT_CATEGORIES.invoices,
+      { ...range, country, lang },
+    );
+    return parseInvoicesContent(csv, "csv");
   }
 
   private async safeStockExport(category: string): Promise<NoonStockDto[]> {
@@ -266,7 +298,10 @@ function catalogStatusesFromEnv(): string[] {
   return list.length ? list : ["live"];
 }
 
-function orderDateRange(since: string | null): {
+function orderDateRange(
+  since: string | null,
+  defaultDays = 30,
+): {
   from_date: string;
   to_date: string;
 } {
@@ -281,5 +316,5 @@ function orderDateRange(since: string | null): {
       };
     }
   }
-  return impexDateRangeDays(30);
+  return impexDateRangeDays(defaultDays);
 }

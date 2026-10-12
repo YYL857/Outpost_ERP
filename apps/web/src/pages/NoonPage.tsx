@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, type DomainMapRow, type NoonConnection } from "../api";
+import { ClearableInput } from "../components/ClearableInput";
 
 const emptyPortal = {
   portalUrl: "https://login.noon.partners/",
@@ -228,7 +229,7 @@ export function NoonPage() {
           </span>
         </div>
         <Link className="btn" to="/sync-health">
-          查看同步健康
+          数据对齐 · 一键补齐
         </Link>
       </div>
 
@@ -268,8 +269,8 @@ export function NoonPage() {
         <h3 style={{ marginTop: 0 }}>分域映射（一源一域一主页）</h3>
         <p className="muted" style={{ marginTop: 0 }}>
           不同 NOON 报表进入不同 SyncDomain，展示到对应慧运营页面，禁止全部塞进 Catalog。完整说明见{" "}
-          <code>docs/NOON_OUTPOST_DATA_MAP.md</code>。广告域由影刀导出投递（
-          <code>docs/YINGDAO_BRIDGE.md</code>），不走 Impex。
+          <code>docs/NOON_OUTPOST_DATA_MAP.md</code>。广告域由 Playwright 导出投递（
+          <code>docs/PW_RPA_PLATFORM.md</code>），不走 Impex。
         </p>
         <table className="table">
           <thead>
@@ -371,7 +372,7 @@ export function NoonPage() {
             </div>
             <div className="field">
               <label>卖家后台地址</label>
-              <input
+              <ClearableInput
                 value={form.portal?.portalUrl ?? ""}
                 onChange={(e) => patchPortal("portalUrl", e.target.value)}
                 placeholder="NOON Seller 后台首页 URL"

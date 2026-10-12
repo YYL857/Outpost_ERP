@@ -12,11 +12,29 @@ import {
 } from "../market-intel/scheduler.js";
 import { listRecentJobs } from "../market-intel/store.js";
 import {
+  envMiDigestDefaultEnabled,
+  envStoreDigestDefaultEnabled,
+  getMorningDigestSchedulerStatus,
+  runMiMorningDigest,
+  runStoreMorningDigest,
+  setMiDigestEnabled,
+  setStoreDigestEnabled,
+  startMorningDigestScheduler,
+} from "../morning-digest/index.js";
+import {
   envAssemblySyncDefaultEnabled,
   getAssemblySyncSchedulerStatus,
   setAssemblySyncSchedulerEnabled,
   startAssemblySyncScheduler,
 } from "../sync/assembly-scheduler.js";
+import {
+  envGpCloseDefaultEnabled,
+  getGpCloseSchedulerStatus,
+  runGpCloseTick,
+  setGpCloseSchedulerEnabled,
+  startGpCloseScheduler,
+  stopGpCloseScheduler,
+} from "../finance/gp-close-scheduler.js";
 import {
   getLastAssemblySync,
   isAssemblySyncRunning,
@@ -39,12 +57,15 @@ export type SchedulerId =
   | "assembly-sync"
   | "mi-discover"
   | "mi-collect"
-  | "inbox-watcher";
+  | "inbox-watcher"
+  | "store-morning-digest"
+  | "mi-morning-digest"
+  | "gp-month-close";
 
 export type SchedulerItem = {
   id: SchedulerId;
   label: string;
-  group: "sync" | "market-intel";
+  group: "sync" | "market-intel" | "digest";
   enabled: boolean;
   timerActive: boolean;
   everyMs: number;
@@ -60,6 +81,9 @@ const IDS: SchedulerId[] = [
   "mi-discover",
   "mi-collect",
   "inbox-watcher",
+  "store-morning-digest",
+  "mi-morning-digest",
+  "gp-month-close",
 ];
 
 function recentMi(kind: "discover" | "collect") {
@@ -76,6 +100,7 @@ export function listSchedulers(): SchedulerItem[] {
   const assembly = getAssemblySyncSchedulerStatus();
   const mi = getSchedulerStatus();
   const watcher = getInboxWatcherStatus();
+  const digest = getMorningDigestSchedulerStatus();
   const discoverRecent = recentMi("discover");
   const collectRecent = recentMi("collect");
 
@@ -90,7 +115,7 @@ export function listSchedulers(): SchedulerItem[] {
       running: poller.running,
       lastRunAt: poller.lastRunAt,
       lastMessage: poller.lastMessage,
-      note: `live 每 ${poller.liveEveryN} tick 一次 Impex`,
+      note: `多店错峰 · 每 ${poller.liveEveryN} tick 最多 1 店 Impex；Catalog/库存过期自动重拉`,
     },
     {
       id: "assembly-sync",
@@ -102,7 +127,43 @@ export function listSchedulers(): SchedulerItem[] {
       running: assembly.running,
       lastRunAt: assembly.lastRunAt,
       lastMessage: assembly.lastMessage,
-      note: "Noon + 广告入库 + 飞书",
+      note: "全店广告+飞书 · Noon 每周期最多 1 店",
+    },
+    {
+      id: "store-morning-digest",
+      label: "店内晨报推送",
+      group: "digest",
+      enabled: digest.store.enabled,
+      timerActive: digest.timerActive && digest.store.enabled,
+      everyMs: 24 * 60 * 60 * 1000,
+      running: digest.store.running,
+      lastRunAt: digest.store.lastRunAt,
+      lastMessage: digest.store.lastMessage,
+      note: `每天 ${digest.store.at}（上海）汇总→门禁→模型→飞书`,
+    },
+    {
+      id: "mi-morning-digest",
+      label: "市场情报晨报推送",
+      group: "digest",
+      enabled: digest.mi.enabled,
+      timerActive: digest.timerActive && digest.mi.enabled,
+      everyMs: 24 * 60 * 60 * 1000,
+      running: digest.mi.running,
+      lastRunAt: digest.mi.lastRunAt,
+      lastMessage: digest.mi.lastMessage,
+      note: `每天 ${digest.mi.at}（上海）；默认关，影刀定时就绪后启用`,
+    },
+    {
+      id: "gp-month-close",
+      label: "月度毛利关账",
+      group: "digest",
+      enabled: getGpCloseSchedulerStatus().enabled,
+      timerActive: getGpCloseSchedulerStatus().timerActive,
+      everyMs: getGpCloseSchedulerStatus().everyMs,
+      running: getGpCloseSchedulerStatus().running,
+      lastRunAt: getGpCloseSchedulerStatus().lastRunAt,
+      lastMessage: getGpCloseSchedulerStatus().lastMessage,
+      note: "上海时间每月 3/5/8 日 10:00：提醒缺月末账单 → 门禁关账 → 升级告警。手动运行=关上月。",
     },
     {
       id: "mi-discover",
@@ -193,6 +254,21 @@ export function startScheduler(
     case "inbox-watcher":
       setInboxWatcherEnabled(true);
       break;
+    case "store-morning-digest":
+      persistSyncOverride("store-morning-digest", true);
+      startMorningDigestScheduler(getState, { storeEnabled: true });
+      break;
+    case "mi-morning-digest":
+      persistSyncOverride("mi-morning-digest", true);
+      startMorningDigestScheduler(getState, { miEnabled: true });
+      break;
+    case "gp-month-close":
+      persistSyncOverride("gp-month-close", true);
+      setGpCloseSchedulerEnabled(true);
+      if (!getGpCloseSchedulerStatus().timerActive) {
+        startGpCloseScheduler({ enabled: true });
+      }
+      break;
   }
   return getScheduler(id)!;
 }
@@ -216,6 +292,19 @@ export function stopScheduler(
       break;
     case "inbox-watcher":
       setInboxWatcherEnabled(false);
+      break;
+    case "store-morning-digest":
+      persistSyncOverride("store-morning-digest", false);
+      setStoreDigestEnabled(false);
+      break;
+    case "mi-morning-digest":
+      persistSyncOverride("mi-morning-digest", false);
+      setMiDigestEnabled(false);
+      break;
+    case "gp-month-close":
+      persistSyncOverride("gp-month-close", false);
+      setGpCloseSchedulerEnabled(false);
+      stopGpCloseScheduler();
       break;
   }
   return getScheduler(id)!;
@@ -269,6 +358,20 @@ export async function runScheduler(
         detail: { discover, collect },
       };
     }
+    case "store-morning-digest": {
+      const r = await runStoreMorningDigest(getState, {
+        triggeredBy: "manual",
+      });
+      return { ok: r.ok, message: r.message, detail: r };
+    }
+    case "mi-morning-digest": {
+      const r = await runMiMorningDigest({ triggeredBy: "manual" });
+      return { ok: r.ok, message: r.message, detail: r };
+    }
+    case "gp-month-close": {
+      const r = await runGpCloseTick("close", { triggeredBy: "manual" });
+      return { ok: r.ok, message: r.message, detail: r };
+    }
   }
 }
 
@@ -279,5 +382,9 @@ export function resolveBootEnabled(
   const override = getOverrideEnabled(id);
   if (override !== undefined) return override;
   if (id === "assembly-sync") return envAssemblySyncDefaultEnabled();
+  if (id === "pw-keepalive") return false;
+  if (id === "store-morning-digest") return envStoreDigestDefaultEnabled();
+  if (id === "mi-morning-digest") return envMiDigestDefaultEnabled();
+  if (id === "gp-month-close") return envGpCloseDefaultEnabled();
   return true; // noon-poller: always on unless overridden
 }

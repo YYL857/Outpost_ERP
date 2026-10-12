@@ -4,6 +4,7 @@ import {
   type DailyBriefRecipient,
   type DailyBriefStatus,
 } from "../api";
+import { ClearableInput } from "../components/ClearableInput";
 
 export function DailyBriefPage() {
   const [status, setStatus] = useState<DailyBriefStatus | null>(null);
@@ -235,7 +236,7 @@ export function DailyBriefPage() {
         </table>
 
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
-          <input
+          <ClearableInput
             className="input"
             style={{ minWidth: 120 }}
             placeholder="备注（如 慧慧）"
@@ -243,7 +244,7 @@ export function DailyBriefPage() {
             disabled={Boolean(busy)}
             onChange={(e) => setFormRemark(e.target.value)}
           />
-          <input
+          <ClearableInput
             className="input"
             style={{ minWidth: 280, flex: 1 }}
             placeholder="会话 ID（oc_… / ou_…）"

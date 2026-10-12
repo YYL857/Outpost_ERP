@@ -1,0 +1,42 @@
+{
+  "manifest_version": 3,
+  "name": "Outpost 约仓陪伴",
+  "version": "1.2.14",
+  "description": "Noon ASN 自动约仓 + Outpost 分箱分店对齐陪伴；约仓结果按 ASN 持久记住，可编辑后再回填装箱表",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "downloads",
+    "scripting",
+    "sidePanel"
+  ],
+  "host_permissions": [
+    "https://*.noon.partners/*",
+    "http://127.0.0.1/*",
+    "http://localhost/*",
+    "http://*/*"
+  ],
+  "action": {
+    "default_title": "打开约仓陪伴侧栏"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.noon.partners/*"
+      ],
+      "js": [
+        "site-config.js",
+        "content.js",
+        "capture-hook.js",
+        "companion-float.js"
+      ],
+      "run_at": "document_end"
+    }
+  ]
+}

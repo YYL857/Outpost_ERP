@@ -3,7 +3,16 @@
  */
 import type { AppState } from "../../../common/types.js";
 import { saveState } from "../../../data/store.js";
+import {
+  aggregateStatementCsv,
+  upsertSettlementMonths,
+} from "../../../modules/finance/statement-settlement.js";
 import { enqueueInbox } from "../../../modules/sync/inbox.js";
+import {
+  applyStockLedgerSnapshot,
+  hasRealStockLedger,
+  stripCatalogStockHintRows,
+} from "../../../modules/sync/live-impex-domains.js";
 import { upsertDimsGapFill, upsertFeeEstimate } from "./gap-fill-ingest.js";
 import {
   detectDomainFromFilename,
@@ -53,17 +62,27 @@ export function importPortalContent(
     enqueueParsed(state, "catalog", rows);
     const stockHints = parseStockHintsFromCatalogContent(input.content, format);
     if (stockHints.length) {
-      state.portalCache.stock = [...(state.portalCache.stock ?? []), ...stockHints];
-      enqueueParsed(state, "stock", stockHints);
+      // 已有真分仓 ledger 时禁止再写 Catalog 假仓（否则 FBN 会与 RUH01S 双计）
+      if (hasRealStockLedger(state.stock)) {
+        stripCatalogStockHintRows(state);
+      } else {
+        state.portalCache.stock = [
+          ...(state.portalCache.stock ?? []),
+          ...stockHints,
+        ];
+        enqueueParsed(state, "stock", stockHints);
+      }
     }
     // Catalog Export 若含 Estimated Fees 列，顺带写入 feeEstimates
     const est = parseCatalogEstimatedFees(input.content, format);
     for (const e of est) upsertFeeEstimate(state, e, "noon:catalog_export");
   } else if (input.domain === "stock") {
     const rows = parseStockContent(input.content, format);
-    state.portalCache.stock = rows;
-    count = rows.length;
-    enqueueParsed(state, "stock", rows);
+    if (!rows.length) {
+      throw new Error("库存文件解析为 0 行，已跳过快照覆盖，避免清空现有仓存");
+    }
+    // 全量快照原子写入（不经 inbox duplicate）
+    count = applyStockLedgerSnapshot(state, rows);
     // Inventory 导出若含尺寸列，仅补空写入 skuDims
     const dims = parseFbnDimsContent(input.content, format);
     for (const d of dims) upsertDimsGapFill(state, d, "noon:fbn_inventory");
@@ -87,6 +106,18 @@ export function importPortalContent(
     const rows = parseFbnDimsContent(input.content, format);
     for (const d of rows) upsertDimsGapFill(state, d, "noon:fbn_inventory");
     count = rows.length;
+  } else if (input.domain === "statements") {
+    const months = aggregateStatementCsv(input.content);
+    count = upsertSettlementMonths(
+      state,
+      months,
+      input.filename || "statements.csv",
+    );
+    if (!count) {
+      throw new Error(
+        "Statement CSV 未解析到有效月份行，请确认含 Date / Details EN / Amount",
+      );
+    }
   } else {
     const rows = parseFeesContent(input.content, format);
     state.portalCache.fees = rows;
@@ -135,7 +166,10 @@ export function importPortalFileByName(
 
 function enqueueParsed(
   state: AppState,
-  domain: Exclude<PortalDomain, "fee_estimates" | "fbn_dims">,
+  domain: Exclude<
+    PortalDomain,
+    "fee_estimates" | "fbn_dims" | "statements"
+  >,
   rows:
     | NoonOrderDto[]
     | NoonCatalogDto[]

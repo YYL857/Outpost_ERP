@@ -14,8 +14,8 @@ export type NoonStockDto = {
   partner_sku: string;
   warehouse_code: string;
   qty: number;
-  /** SOP Inventory：履约类型 */
-  fulfillment: "fbn" | "fbp" | "unknown";
+  /** SOP / FBN Ledger：履约类型（含 supermall / transit） */
+  fulfillment: "fbn" | "fbp" | "supermall" | "transit" | "unknown";
   in_transit_qty: number;
   updated_at: string;
 };
@@ -28,9 +28,18 @@ export type NoonCatalogDto = {
   noon_sku: string;
   image_url: string;
   price: number;
+  /** Catalog Export 列 active_price；没有活动价时为 null */
+  active_price?: number | null;
+  /** Catalog Export 列 price（底价/标价，非 active_price） */
+  list_price?: number | null;
   currency: string;
   listing_type: string;
   updated_at: string;
+  /**
+   * Catalog Export `stock_fbn_net`（门户 Active Net Stock · FBN）。
+   * null/缺省=本次未带该列；0=门户显示 0。
+   */
+  stock_fbn_net?: number | null;
 };
 
 /** SOP Sales：日销量事实 */
@@ -52,6 +61,19 @@ export type NoonFeeDto = {
   updated_at: string;
 };
 
+/** Impex invoicesandcreditnotes */
+export type NoonInvoiceDto = {
+  invoice_nr: string;
+  invoice_type: string;
+  status: string;
+  currency: string;
+  amount: number;
+  issued_at: string | null;
+  due_at: string | null;
+  partner_sku: string;
+  updated_at: string;
+};
+
 /** Noon Ads Campaign Overview → SKU sheet */
 export type NoonAdsDto = {
   partner_sku: string;
@@ -63,6 +85,8 @@ export type NoonAdsDto = {
   orders: number;
   views: number;
   clicks: number;
+  /** Add to Cart；旧导出缺省 0 */
+  atc: number;
   updated_at: string;
 };
 

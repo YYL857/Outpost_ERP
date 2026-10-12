@@ -1,516 +1,371 @@
-import { useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
-import {
-  api,
-  type ReviewConfig,
-  type ShippingConfig,
-  type ShopInfo,
-  type StoreInfo,
-  type SyncHealth,
-} from "../api";
+import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
+import { api, type DashboardOverview } from "../api";
+import { DataFreshnessBanner } from "../components/DataFreshnessBanner";
 
-function toneOf(status: SyncHealth["overall"]): "ok" | "warn" | "danger" | "idle" {
-  if (status === "failed") return "danger";
-  if (status === "warning" || status === "running") return "warn";
-  if (status === "success") return "ok";
-  return "idle";
+function fmtSar(n: number) {
+  if (!Number.isFinite(n)) return "—";
+  if (Math.abs(n) >= 1000) {
+    return `SAR ${(n / 1000).toFixed(n >= 10000 ? 1 : 2)}K`;
+  }
+  return `SAR ${n.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
 }
 
-function labelOf(status: SyncHealth["overall"]) {
-  const map = {
-    success: "同步正常",
-    warning: "同步异常/延迟",
-    failed: "同步失败",
-    running: "同步进行中",
-    idle: "尚未同步",
-  } as const;
-  return map[status];
+function fmtInt(n: number) {
+  return n.toLocaleString("en-US");
+}
+
+function Trend({ pct }: { pct: number | null | undefined }) {
+  if (pct == null || !Number.isFinite(pct)) {
+    return <span className="dash-trend is-flat">较上日 —</span>;
+  }
+  const up = pct > 0;
+  const flat = pct === 0;
+  return (
+    <span
+      className={`dash-trend${flat ? " is-flat" : up ? " is-up" : " is-down"}`}
+    >
+      {flat ? "→" : up ? "↑" : "↓"} {Math.abs(pct).toFixed(2)}%
+      <em>较上日</em>
+    </span>
+  );
+}
+
+function SparkBars({
+  values,
+  labels,
+  formatValue,
+  accent = false,
+}: {
+  values: number[];
+  labels?: string[];
+  formatValue?: (n: number) => string;
+  accent?: boolean;
+}) {
+  const max = Math.max(1, ...values);
+  const [tip, setTip] = useState<{
+    i: number;
+    x: number;
+    y: number;
+  } | null>(null);
+
+  return (
+    <div
+      className={`dash-spark${accent ? " is-accent" : ""}`}
+      onMouseLeave={() => setTip(null)}
+    >
+      {values.map((v, i) => (
+        <span
+          key={i}
+          className={tip?.i === i ? "is-hot" : undefined}
+          style={{ height: `${Math.max(6, (v / max) * 100)}%` }}
+          onMouseEnter={(e) => {
+            const rect = e.currentTarget.getBoundingClientRect();
+            const parent = e.currentTarget.parentElement?.getBoundingClientRect();
+            if (!parent) return;
+            setTip({
+              i,
+              x: rect.left - parent.left + rect.width / 2,
+              y: 0,
+            });
+          }}
+        />
+      ))}
+      {tip && (
+        <div
+          className="dash-spark-tip"
+          style={{ left: tip.x }}
+          role="tooltip"
+        >
+          <strong>{labels?.[tip.i] ?? `#${tip.i + 1}`}</strong>
+          <span>
+            {(formatValue ?? String)(values[tip.i] ?? 0)}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function confLabel(c: DashboardOverview["confidence"]) {
+  if (c === "high") return "高置信";
+  if (c === "medium") return "中置信";
+  return "低置信";
 }
 
 export function HomePage() {
-  const navigate = useNavigate();
-  const [store, setStore] = useState<StoreInfo | null>(null);
-  const [shipping, setShipping] = useState<ShippingConfig | null>(null);
-  const [review, setReview] = useState<ReviewConfig | null>(null);
-  const [health, setHealth] = useState<SyncHealth | null>(null);
-  const [shops, setShops] = useState<ShopInfo[]>([]);
-  const [saving, setSaving] = useState<"shipping" | "review" | "register" | null>(
-    null,
-  );
-  const [message, setMessage] = useState("");
+  const [data, setData] = useState<DashboardOverview | null>(null);
   const [error, setError] = useState("");
-  const [credPath, setCredPath] = useState("");
-  const [shopName, setShopName] = useState("");
-  const [countryCode, setCountryCode] = useState<"sa" | "ae" | "eg">("sa");
-  const [setActiveAfterRegister, setSetActiveAfterRegister] = useState(true);
+  const [loading, setLoading] = useState(true);
 
   async function refresh() {
-    const [s, ship, rev, h, shopRes] = await Promise.all([
-      api.getStore(),
-      api.getShipping(),
-      api.getReview(),
-      api.getSyncHealth(),
-      api.getShops(),
-    ]);
-    setStore(s.data);
-    setShipping(ship.data);
-    setReview(rev.data);
-    setHealth(h.data);
-    setShops(shopRes.data.shops);
+    setLoading(true);
+    setError("");
+    try {
+      const res = await api.getDashboardOverview();
+      setData(res.data);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "加载失败");
+    } finally {
+      setLoading(false);
+    }
   }
 
   useEffect(() => {
-    refresh().catch((e: Error) => setError(e.message));
+    void refresh();
   }, []);
 
-  async function registerShop() {
-    const path = credPath.trim();
-    if (!path) {
-      setError("请填写 Service Account JSON 的本机绝对路径");
-      return;
-    }
-    setSaving("register");
-    setMessage("");
-    setError("");
-    try {
-      const res = await api.registerShop({
-        credentialsFile: path,
-        name: shopName.trim() || undefined,
-        countryCode,
-        noonMode: "live",
-        setActive: setActiveAfterRegister,
-      });
-      setMessage(res.message ?? "店铺已录入");
-      setCredPath("");
-      setShopName("");
-      const list = await api.getShops();
-      setShops(list.data.shops);
-      if (res.data.switched || res.data.shop.isActive) {
-        navigate(0);
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "店铺录入失败");
-    } finally {
-      setSaving(null);
-    }
-  }
-
-  async function saveShipping() {
-    if (!shipping) return;
-    if (!(shipping.buybackRate > 0)) {
-      setError("请填写回购汇率（1 SAR → 多少 RMB，须大于 0）后再保存");
-      setMessage("");
-      return;
-    }
-    setSaving("shipping");
-    setMessage("");
-    setError("");
-    try {
-      const body = {
-        airFreightAedPerKg: shipping.airFreightAedPerKg ?? 0,
-        airLeadDays: shipping.airLeadDays,
-        seaFreightAedPerCbm: shipping.seaFreightAedPerCbm ?? 0,
-        seaLeadDays: shipping.seaLeadDays,
-        airFreightRmbPerKg: shipping.airFreightRmbPerKg ?? 65,
-        seaFreightRmbPerCbmPlug: shipping.seaFreightRmbPerCbmPlug ?? 2200,
-        seaFreightRmbPerCbmBuiltin: shipping.seaFreightRmbPerCbmBuiltin ?? 2400,
-        seaFreightRmbPerCbmGeneral: shipping.seaFreightRmbPerCbmGeneral ?? 1830,
-        buybackRate: shipping.buybackRate,
-        volumetricDivisor: shipping.volumetricDivisor,
-      };
-      const res = await api.putShipping(body);
-      setShipping(res.data);
-      setMessage("运输费用配置已更新");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "保存失败");
-    } finally {
-      setSaving(null);
-    }
-  }
-
-  async function saveReview() {
-    if (!review) return;
-    setSaving("review");
-    setMessage("");
-    setError("");
-    try {
-      const body = {
-        commissionRmb: review.commissionRmb,
-        exchangeRate: review.exchangeRate,
-        expressFeeRmb: review.expressFeeRmb,
-        balanceRmb: review.balanceRmb,
-      };
-      const res = await api.putReview(body);
-      setReview(res.data);
-      setMessage("测评费用配置已更新");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "保存失败");
-    } finally {
-      setSaving(null);
-    }
-  }
-
-  if (!store || !shipping || !review || !health) {
-    return <p className="muted">{error || "加载中…"}</p>;
-  }
-
-  const usedPct = Math.min(
-    100,
-    Math.round((store.listingUsed / store.listingQuota) * 100),
+  const seriesAmounts = useMemo(
+    () => data?.sales.series.map((d) => d.amount) ?? [],
+    [data],
   );
-  const tone = toneOf(health.overall);
+  const seriesUnits = useMemo(
+    () => data?.sales.series.map((d) => d.units) ?? [],
+    [data],
+  );
+
+  if (loading && !data) {
+    return (
+      <div className="page">
+        <p className="muted">加载数据看板…</p>
+      </div>
+    );
+  }
+
+  if (error && !data) {
+    return (
+      <div className="page">
+        <p style={{ color: "var(--danger)" }}>{error}</p>
+        <button type="button" className="btn" onClick={() => void refresh()}>
+          重试
+        </button>
+      </div>
+    );
+  }
+
+  if (!data) return null;
+
+  const s = data.sales;
+  const ads = data.ads;
 
   return (
-    <div>
-      <h1 className="page-title">我的主页</h1>
-      <p className="page-desc">店铺概览、上架额度与成本配置。一眼能看懂当前经营状态。</p>
-
-      <div className={`status-bar ${tone}`}>
-        <div className="row">
-          <span className={`badge ${tone}`}>{labelOf(health.overall)}</span>
-          <span className="muted">
-            未处理告警 {health.openAlertCount} 条 · 数据源 NOON · 双通道（Webhook + 拉取）已预留
+    <div className="page dash-page">
+      <div className="page-header dash-page-header">
+        <div>
+          <h1>数据看板</h1>
+          <p className="muted">
+            {data.shop.name || data.shop.projectCode} · 主营收口径{" "}
+            <strong>salesFacts</strong>（与销量统计一致）· 最新销售日{" "}
+            {s.latestDate ?? "—"}
+          </p>
+        </div>
+        <div className="row" style={{ gap: 8 }}>
+          <span className={`dash-conf dash-conf-${data.confidence}`}>
+            {confLabel(data.confidence)}
           </span>
-        </div>
-        <Link className="btn" to="/sync-health">
-          打开同步健康中心
-        </Link>
-      </div>
-
-      {(message || error) && (
-        <p className="muted" style={{ marginBottom: 12, color: error ? "var(--danger)" : "var(--ok)" }}>
-          {error || message}
-        </p>
-      )}
-
-      <div className="grid-3" style={{ marginBottom: 16 }}>
-        <div className="card">
-          <h3>店铺信息</h3>
-          <div className="kv">
-            <label>名称</label>
-            <div>{store.name}</div>
-            <label>账号</label>
-            <div>{store.account}</div>
-            <label>站点</label>
-            <div>{store.site}</div>
-            <label>平台</label>
-            <div>{store.platform}</div>
-          </div>
-        </div>
-
-        <div className="card">
-          <h3>本月上架额度</h3>
-          <p style={{ margin: "0 0 10px", fontSize: 20, fontWeight: 650 }}>
-            {store.listingUsed} / {store.listingQuota}
-          </p>
-          <div className="progress">
-            <span style={{ width: `${usedPct}%` }} />
-          </div>
-          <p className="muted" style={{ marginTop: 10 }}>
-            已用 {usedPct}%
-          </p>
-        </div>
-
-        <div className="card">
-          <h3>同步摘要</h3>
-          <div className="kv">
-            <label>订单</label>
-            <div>
-              {health.jobs.find((j) => j.domain === "orders")?.status ?? "-"}
-            </div>
-            <label>库存</label>
-            <div>
-              {health.jobs.find((j) => j.domain === "stock")?.status ?? "-"}
-            </div>
-            <label>对账</label>
-            <div>
-              {health.jobs.find((j) => j.domain === "reconcile")?.status ?? "-"}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div className="card" style={{ marginBottom: 16 }}>
-        <div className="row" style={{ justifyContent: "space-between", marginBottom: 12 }}>
-          <h3 style={{ margin: 0 }}>店铺录入</h3>
+          <Link className="btn" to="/ticket-ledger">
+            票货台账
+          </Link>
           <button
-            className="btn btn-primary"
             type="button"
-            disabled={saving === "register"}
-            onClick={registerShop}
+            className="btn"
+            disabled={loading}
+            onClick={() => void refresh()}
           >
-            {saving === "register" ? "录入中…" : "录入店铺"}
+            {loading ? "刷新中…" : "刷新"}
           </button>
         </div>
-        <p className="muted" style={{ marginTop: 0 }}>
-          在 NOON Partner 控制台下载 Access App 的 Service Account JSON，填本机绝对路径即可录入。
-          系统会读取其中的 <code>project_code</code>，私钥只留在你指定的文件里。
-        </p>
-        <div className="field-grid">
-          <div className="field" style={{ gridColumn: "1 / -1" }}>
-            <label>凭证 JSON 路径</label>
-            <input
-              type="text"
-              placeholder="例如 D:\PRJ396770\noon_credentials_sensitive.json"
-              value={credPath}
-              onChange={(e) => setCredPath(e.target.value)}
-            />
+      </div>
+
+      <DataFreshnessBanner compact />
+
+      {data.caveats.length > 0 && (
+        <details className="dash-caveats">
+          <summary>口径注意 · {data.caveats.length} 条</summary>
+          {data.caveats.map((c) => (
+            <p key={c}>{c}</p>
+          ))}
+        </details>
+      )}
+
+      <section className="dash-hero-grid">
+        <article className="dash-card dash-card-sales">
+          <div className="dash-card-top">
+            <h3>销售额</h3>
+            <Trend pct={s.vsPreviousPct.amount} />
           </div>
-          <div className="field">
-            <label>店铺名称（可选）</label>
-            <input
-              type="text"
-              placeholder="留空则用 Shop PRJ…"
-              value={shopName}
-              onChange={(e) => setShopName(e.target.value)}
-            />
+          <p className="dash-metric">{fmtSar(s.latest.amount)}</p>
+          <p className="dash-sub">
+            累计 {fmtSar(s.totalAmount)} · {fmtInt(s.totalUnits)} 件 ·{" "}
+            {s.skuCount} SKU
+          </p>
+          <SparkBars
+            values={seriesAmounts}
+            labels={s.series.map((d) => d.date)}
+            formatValue={(n) => fmtSar(n)}
+            accent
+          />
+          <p className="dash-axis muted">
+            近 30 日 · {s.series[0]?.date ?? ""} →{" "}
+            {s.series[s.series.length - 1]?.date ?? ""}
+          </p>
+        </article>
+
+        <article className="dash-card">
+          <div className="dash-card-top">
+            <h3>广告归因（昨日）</h3>
+            <Link className="dash-link" to="/ads">
+              广告管理
+            </Link>
           </div>
-          <div className="field">
-            <label>站点</label>
-            <select
-              value={countryCode}
-              onChange={(e) =>
-                setCountryCode(e.target.value as "sa" | "ae" | "eg")
-              }
-            >
-              <option value="sa">沙特 SA</option>
-              <option value="ae">阿联酋 AE</option>
-              <option value="eg">埃及 EG</option>
-            </select>
-          </div>
-          <div className="field">
-            <label>录入后切为当前店</label>
-            <label className="row" style={{ gap: 8, marginTop: 8 }}>
-              <input
-                type="checkbox"
-                checked={setActiveAfterRegister}
-                onChange={(e) => setSetActiveAfterRegister(e.target.checked)}
-              />
-              <span>是</span>
-            </label>
-          </div>
+          <p className="dash-metric">
+            {ads.roas != null ? `${ads.roas}x` : "—"}
+            <span className="dash-metric-unit">投产比</span>
+          </p>
+          <p className="dash-sub">
+            花费 {fmtSar(ads.spend)} · 带来收益 {fmtSar(ads.revenue)}
+            {ads.contributionPct != null
+              ? ` · 占昨日销售 ${ads.contributionPct}%`
+              : ""}
+          </p>
+          <p className="dash-hint muted">
+            {ads.scope === "none" || (!ads.reportFrom && !ads.date)
+              ? "暂无昨日广告报表"
+              : ads.scope === "covering"
+                ? `${ads.date ?? ads.reportFrom} · 区间覆盖估算（非单日）`
+                : `${ads.date ?? ads.reportFrom ?? "—"} · 单日归因`}
+          </p>
+        </article>
+      </section>
+
+      <section className="dash-kpi-row">
+        <article className="dash-kpi">
+          <h4>有库存 SKU</h4>
+          <p>{fmtInt(data.catalog.stockSkuCount)}</p>
+          <span className="muted">qty&gt;0 · 最近同步快照</span>
+        </article>
+        <Link className="dash-kpi dash-kpi-link" to="/shipping#packing-in-transit">
+          <h4>在库 / 在途</h4>
+          <p>
+            {fmtInt(data.catalog.onHandQty)}
+            <span className="dash-kpi-split">/</span>
+            {fmtInt(data.catalog.inTransitQty)}
+          </p>
+          <span className="muted">
+            点击查看票/箱明细
+            {data.catalog.inTransitTicketCount
+              ? ` · ${data.catalog.inTransitTicketCount}票/${data.catalog.inTransitBoxCount ?? 0}箱`
+              : ""}
+          </span>
+        </Link>
+        <article className="dash-kpi">
+          <h4>昨日成交订单</h4>
+          <p>{fmtInt(data.orders.yesterday?.count ?? 0)}</p>
+          <Trend pct={data.orders.vsPreviousDayPct} />
+          <span className="muted">
+            GMV {fmtSar(data.orders.yesterday?.gmv ?? 0)}
+            {data.orders.vsPreviousDayGmvPct != null &&
+            Number.isFinite(data.orders.vsPreviousDayGmvPct)
+              ? ` · GMV ${data.orders.vsPreviousDayGmvPct > 0 ? "↑" : data.orders.vsPreviousDayGmvPct < 0 ? "↓" : "→"} ${Math.abs(data.orders.vsPreviousDayGmvPct).toFixed(2)}%`
+              : ""}
+          </span>
+          <span className="muted">
+            {data.orders.yesterday?.date ?? "—"} · 按单去重
+          </span>
+        </article>
+        <article className="dash-kpi">
+          <h4>近 30 日件数</h4>
+          <p>{fmtInt(seriesUnits.reduce((a, b) => a + b, 0))}</p>
+          <SparkBars
+            values={seriesUnits}
+            labels={s.series.map((d) => d.date)}
+            formatValue={(n) => `${fmtInt(n)} 件`}
+          />
+        </article>
+        <article className="dash-kpi">
+          <h4>自然订单</h4>
+          <p>{fmtInt(data.orders.organic?.orders ?? 0)}</p>
+          <span className="muted">
+            总单 − 广告单
+            {data.orders.organic
+              ? ` · 广告 ${fmtInt(data.orders.organic.adOrders)}`
+              : ""}
+          </span>
+        </article>
+        <article className="dash-kpi">
+          <h4>自然 GMV</h4>
+          <p>{fmtSar(data.orders.organic?.gmv ?? 0)}</p>
+          <span className="muted">
+            {fmtSar(data.orders.organic?.totalGmv ?? 0)} − 广告{" "}
+            {fmtSar(data.orders.organic?.adGmv ?? 0)}
+            {data.orders.organic?.gmvFallback
+              ? ` · 总GMV用${data.orders.organic.totalGmvDate}`
+              : ""}
+          </span>
+        </article>
+      </section>
+
+      <section className="dash-top">
+        <div className="dash-card-top">
+          <h3>热销 SKU</h3>
+          <span className="muted">按 salesFacts 累计件数</span>
         </div>
-        {shops.length > 0 && (
-          <div style={{ marginTop: 14 }}>
-            <p className="muted" style={{ marginBottom: 8 }}>
-              已登记 {shops.length} 家店铺（顶栏可切换）
-            </p>
-            <div className="kv">
-              {shops.map((s) => (
-                <div key={s.id} style={{ display: "contents" }}>
-                  <label>
-                    {s.name}
-                    {s.isActive ? " · 当前" : ""}
-                  </label>
-                  <div className="muted" style={{ wordBreak: "break-all" }}>
-                    {s.projectCode} · {s.credentialsFile}
+        {data.topSkus.length === 0 ? (
+          <p className="muted">暂无销量事实</p>
+        ) : (
+          <div className="dash-top-grid">
+            {data.topSkus.map((sku, i) => (
+              <article key={sku.partnerSku} className="dash-top-item">
+                <span className="dash-rank">#{i + 1}</span>
+                {sku.imageUrl ? (
+                  <img src={sku.imageUrl} alt="" className="dash-thumb" />
+                ) : (
+                  <div
+                    className="dash-thumb is-empty"
+                    title="Catalog 未收录该 PSKU 主图（需同步/入库 Catalog）"
+                  >
+                    <span>无图</span>
                   </div>
+                )}
+                <div className="dash-top-body">
+                  <strong title={sku.title || sku.partnerSku}>
+                    {sku.title || "（无标题）"}
+                  </strong>
+                  <code>{sku.partnerSku}</code>
+                  <p>
+                    {fmtInt(sku.units)} 件 · {fmtSar(sku.amount)}
+                  </p>
+                  {!sku.imageUrl && (
+                    <p className="dash-noimg-hint">主图未同步进 Catalog</p>
+                  )}
                 </div>
-              ))}
-            </div>
+                <div className="dash-top-spark">
+                  <SparkBars
+                    values={sku.spark}
+                    labels={s.series.map((d) => d.date)}
+                    formatValue={(n) => `${fmtInt(n)} 件`}
+                  />
+                </div>
+              </article>
+            ))}
           </div>
         )}
-      </div>
+      </section>
 
-      <div className="grid-2">
-        <div className="card">
-          <div className="row" style={{ justifyContent: "space-between", marginBottom: 12 }}>
-            <h3 style={{ margin: 0 }}>运输费用配置</h3>
-            <button
-              className="btn btn-primary"
-              type="button"
-              disabled={saving === "shipping"}
-              onClick={saveShipping}
-            >
-              {saving === "shipping" ? "保存中…" : "更新配置"}
-            </button>
-          </div>
-          <div className="field-grid">
-            <div className="field">
-              <label>空运运费 (RMB/kg)</label>
-              <input
-                type="number"
-                value={shipping.airFreightRmbPerKg ?? 65}
-                onChange={(e) =>
-                  setShipping({
-                    ...shipping,
-                    airFreightRmbPerKg: Number(e.target.value),
-                  })
-                }
-              />
-            </div>
-            <div className="field">
-              <label>空运时效 (天)</label>
-              <input
-                type="number"
-                value={shipping.airLeadDays}
-                onChange={(e) =>
-                  setShipping({ ...shipping, airLeadDays: Number(e.target.value) })
-                }
-              />
-            </div>
-            <div className="field">
-              <label>海运·插电 (RMB/cbm)</label>
-              <input
-                type="number"
-                value={shipping.seaFreightRmbPerCbmPlug ?? 2200}
-                onChange={(e) =>
-                  setShipping({
-                    ...shipping,
-                    seaFreightRmbPerCbmPlug: Number(e.target.value),
-                  })
-                }
-              />
-            </div>
-            <div className="field">
-              <label>海运·内置电 (RMB/cbm)</label>
-              <input
-                type="number"
-                value={shipping.seaFreightRmbPerCbmBuiltin ?? 2400}
-                onChange={(e) =>
-                  setShipping({
-                    ...shipping,
-                    seaFreightRmbPerCbmBuiltin: Number(e.target.value),
-                  })
-                }
-              />
-            </div>
-            <div className="field">
-              <label>海运·普货 (RMB/cbm)</label>
-              <input
-                type="number"
-                value={shipping.seaFreightRmbPerCbmGeneral ?? 1830}
-                onChange={(e) =>
-                  setShipping({
-                    ...shipping,
-                    seaFreightRmbPerCbmGeneral: Number(e.target.value),
-                  })
-                }
-              />
-            </div>
-            <div className="field">
-              <label>海运时效 (天)</label>
-              <input
-                type="number"
-                value={shipping.seaLeadDays}
-                onChange={(e) =>
-                  setShipping({ ...shipping, seaLeadDays: Number(e.target.value) })
-                }
-              />
-            </div>
-            <div className="field">
-              <label>回购汇率（1 SAR → RMB）</label>
-              <input
-                type="number"
-                step="0.01"
-                min={0.01}
-                placeholder="例如 1.8"
-                value={shipping.buybackRate || ""}
-                onChange={(e) =>
-                  setShipping({
-                    ...shipping,
-                    buybackRate: Number(e.target.value) || 0,
-                  })
-                }
-              />
-              {shipping.buybackRate <= 0 ? (
-                <p className="muted" style={{ margin: "6px 0 0", color: "var(--danger)" }}>
-                  未配置：Catalog 利润 RMB 为空，且不扣人民币采购/头程。
-                  <button
-                    className="btn"
-                    type="button"
-                    style={{ marginLeft: 8, padding: "2px 8px", fontSize: 12 }}
-                    onClick={() => setShipping({ ...shipping, buybackRate: 1.8 })}
-                  >
-                    填入参考值 1.8
-                  </button>
-                </p>
-              ) : (
-                <p className="muted" style={{ margin: "6px 0 0" }}>
-                  毛利 RMB = (售价 − 平台税费) × {shipping.buybackRate} − 头程 − 采购；
-                  空运头程 = 计费重 × {shipping.airFreightRmbPerKg} RMB/kg。
-                </p>
-              )}
-            </div>
-            <div className="field">
-              <label>体积重比</label>
-              <input
-                type="number"
-                value={shipping.volumetricDivisor}
-                onChange={(e) =>
-                  setShipping({
-                    ...shipping,
-                    volumetricDivisor: Number(e.target.value),
-                  })
-                }
-              />
-            </div>
-          </div>
-          <p className="muted" style={{ marginTop: 10 }}>
-            更新于 {new Date(shipping.updatedAt).toLocaleString()}
-          </p>
-        </div>
-
-        <div className="card">
-          <div className="row" style={{ justifyContent: "space-between", marginBottom: 12 }}>
-            <h3 style={{ margin: 0 }}>测评费用配置</h3>
-            <button
-              className="btn btn-primary"
-              type="button"
-              disabled={saving === "review"}
-              onClick={saveReview}
-            >
-              {saving === "review" ? "保存中…" : "更新配置"}
-            </button>
-          </div>
-          <div className="field-grid">
-            <div className="field">
-              <label>测评佣金 (RMB/单)</label>
-              <input
-                type="number"
-                value={review.commissionRmb}
-                onChange={(e) =>
-                  setReview({ ...review, commissionRmb: Number(e.target.value) })
-                }
-              />
-            </div>
-            <div className="field">
-              <label>测评汇率</label>
-              <input
-                type="number"
-                step="0.01"
-                value={review.exchangeRate}
-                onChange={(e) =>
-                  setReview({ ...review, exchangeRate: Number(e.target.value) })
-                }
-              />
-            </div>
-            <div className="field">
-              <label>测评快递费 (RMB/单)</label>
-              <input
-                type="number"
-                value={review.expressFeeRmb}
-                onChange={(e) =>
-                  setReview({ ...review, expressFeeRmb: Number(e.target.value) })
-                }
-              />
-            </div>
-            <div className="field">
-              <label>测评余额 (RMB)</label>
-              <input
-                type="number"
-                value={review.balanceRmb}
-                onChange={(e) =>
-                  setReview({ ...review, balanceRmb: Number(e.target.value) })
-                }
-              />
-            </div>
-          </div>
-          <p className="muted" style={{ marginTop: 10 }}>
-            更新于 {new Date(review.updatedAt).toLocaleString()}
-          </p>
-        </div>
-      </div>
+      <details className="dash-defs">
+        <summary>数据口径说明</summary>
+        <ul>
+          {data.definitions.map((d) => (
+            <li key={d.id}>
+              <strong>{d.label}</strong>（{d.source} · {d.grain}）— {d.note}
+            </li>
+          ))}
+        </ul>
+        <p className="muted">
+          更新于 {new Date(data.asOf).toLocaleString()} ·{" "}
+          <Link to="/finance">财务报表</Link> 已同步以 salesFacts 为营收主口径
+        </p>
+      </details>
     </div>
   );
 }

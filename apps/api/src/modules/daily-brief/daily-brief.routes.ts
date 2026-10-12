@@ -5,6 +5,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { Router } from "express";
+import { requireAdmin } from "../../auth/middleware.js";
 import {
   buildDailyBriefCard,
   dailyDeepseekConfig,
@@ -101,6 +102,7 @@ function feishuErr(res: import("express").Response, e: unknown) {
 
 export function createDailyBriefRouter() {
   const router = Router();
+  router.use(requireAdmin);
 
   router.get("/status", (_req, res) => {
     const last = readLastBriefDirect();

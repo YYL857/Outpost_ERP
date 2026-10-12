@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import type { AppState } from "../../common/types.js";
 import { saveState } from "../../data/store.js";
+import { requireAdmin } from "../../auth/middleware.js";
 import { createNoonClient } from "../../platforms/noon/index.js";
 import type { NoonWebhookEnvelope } from "../../platforms/noon/types.js";
 import { importPortalContent } from "../../platforms/noon/portal/import-service.js";
@@ -132,7 +133,7 @@ export function createNoonRouter(getState: () => AppState) {
           : "Inventory / FBN detailed",
         count: state.stock.length,
         primaryPage: "Catalog（库存列）",
-        refs: ["补货计划", "发货管理"],
+        refs: ["补货计划", "物流管理"],
         mapped: true,
         wave: 1,
       },
@@ -252,7 +253,7 @@ export function createNoonRouter(getState: () => AppState) {
   });
 
   /** 兜底：手工导入 CSV/JSON（日常请用自动同步） */
-  router.post("/portal/import", async (req, res) => {
+  router.post("/portal/import", requireAdmin, async (req, res) => {
     const parsed = importSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: "导入参数无效", details: parsed.error.flatten() });
@@ -281,7 +282,7 @@ export function createNoonRouter(getState: () => AppState) {
   });
 
   /** 扫描 portal-imports 自动入库 */
-  router.post("/portal/auto-ingest", async (req, res) => {
+  router.post("/portal/auto-ingest", requireAdmin, async (req, res) => {
     const state = getState();
     try {
       const force = Boolean(req.body?.force);
@@ -305,7 +306,7 @@ export function createNoonRouter(getState: () => AppState) {
    * 全自动同步：live → Partner API Impex；portal → 扫描 portal-imports 入库
    * body.skipSop / skipProbe 已废弃，忽略
    */
-  router.post("/portal/auto-sync", async (req, res) => {
+  router.post("/portal/auto-sync", requireAdmin, async (req, res) => {
     const state = getState();
     try {
       const forceIngest = Boolean(req.body?.forceIngest);
@@ -388,7 +389,7 @@ export function createNoonRouter(getState: () => AppState) {
     }
     if (domain === "ads") {
       res.type("text/csv").send(
-        "sku,campaign_name,from_date,to_date,spend,revenue,orders,views,clicks\nN1-SAMPLE,PLA Auto,2026-09-01,2026-09-07,50,200,4,1000,80\n",
+        "sku,campaign_name,from_date,to_date,spend,revenue,orders,views,clicks,atc\nN1-SAMPLE,PLA Auto,2026-09-01,2026-09-07,50,200,4,1000,80,25\n",
       );
       return;
     }

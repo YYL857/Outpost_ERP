@@ -29,7 +29,13 @@ export type FeishuDocRef = {
   url?: string;
   /** 电子表格 token；spreadsheet 必填（可由 url 解析） */
   spreadsheetToken?: string;
-  /** 仅拉这些 sheet 标题；空 = 全部 */
+  /** 多维表 app_token（已知时直填；wiki 形态可空，拉取时用 wikiToken 换） */
+  bitableAppToken?: string;
+  /** 多维表 table id（tbl…） */
+  bitableTableId?: string;
+  /** 知识库节点 token（wiki 形态多维表） */
+  wikiToken?: string;
+  /** 仅拉这些 sheet 标题；空 = 全部（仅 spreadsheet） */
   sheetTitles?: string[];
   /** 下游域提示，M2 原样写入 snapshot */
   targetDomain: FeishuTargetDomain;

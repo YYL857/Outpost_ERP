@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>约仓陪伴</title>
+  <link rel="stylesheet" href="sidepanel.css" />
+</head>
+<body>
+  <header class="hdr">
+    <div class="hdr-row">
+      <h1>约仓陪伴</h1>
+      <div class="mode-switch" role="group" aria-label="工作模式">
+        <button type="button" id="modeOnlineBtn" class="mode-btn is-on" data-mode="online">在线</button>
+        <button type="button" id="modeOfflineBtn" class="mode-btn" data-mode="offline">离线</button>
+      </div>
+    </div>
+    <p class="sub" id="hdrSub">贴在 Noon 右侧 · 票号对齐 → ASN → 约仓 → 发群文案</p>
+    <p id="offlineBanner" class="offline-banner hidden">离线模式：不连 Outpost 主机，票号/ASN/文案不可查；下方约仓监控可照常使用。</p>
+    <p id="pageShopBadge" class="page-shop">识别当前页店铺中…</p>
+  </header>
+
+  <section class="card online-only">
+    <label for="apiBaseInput">Outpost API 地址</label>
+    <div class="row">
+      <input id="apiBaseInput" type="text" placeholder="http://192.168.1.112:8787" />
+      <button id="saveApiBtn" class="btn" type="button">保存</button>
+    </div>
+    <p class="hint">默认已指向办公室后端 192.168.1.112。一般不用改；连不上时再改这里并保存。</p>
+    <p id="apiBaseStatus" class="status"></p>
+  </section>
+
+  <section class="card online-only">
+    <label for="ticketInput">到仓票号 / 物流前缀</label>
+    <div class="row">
+      <input id="ticketInput" type="text" placeholder="例如 10002160" />
+      <button id="alignBtn" class="btn primary" type="button">对齐</button>
+    </div>
+    <p id="status" class="status"></p>
+    <ul id="autoHints" class="hints hidden"></ul>
+  </section>
+
+  <section id="sessionCard" class="card hidden online-only">
+    <div class="meta">
+      <span id="stepBadge" class="badge">—</span>
+      <span id="sessionId" class="muted"></span>
+    </div>
+    <div id="shopTabs" class="tabs"></div>
+    <div id="shopDetail"></div>
+  </section>
+
+  <section id="asnCard" class="card hidden online-only">
+    <label for="asnInput">本店 ASN 号</label>
+    <div class="row">
+      <input id="asnInput" type="text" placeholder="例如 A06223432PN" />
+      <button id="saveAsnBtn" class="btn" type="button">保存</button>
+      <button id="recallAsnBtn" class="btn ghost" type="button" title="按 ASN 从主机找回已约仓记录">找回约仓</button>
+    </div>
+    <label class="check">
+      <input type="checkbox" id="packedCheck" />
+      已按清单把本店货封装进该 ASN（不可混店）
+    </label>
+    <div class="row links">
+      <a id="asnCreateLink" href="#" target="_blank" rel="noreferrer">打开建 ASN 页</a>
+      <button id="refreshBtn" class="btn ghost" type="button">刷新状态</button>
+    </div>
+  </section>
+
+  <section id="monitorCard" class="card">
+    <h2>约仓监控</h2>
+    <p class="hint" id="monitorHint">请先打开该 ASN 的 schedule 预约页，再在本侧栏开始监控。</p>
+    <label for="warehouseInput">仓库代码</label>
+    <input id="warehouseInput" type="text" placeholder="例如 RUH01S" />
+    <label class="mt">目标日期（可多选）</label>
+    <div class="date-picker-row">
+      <button type="button" id="openDatePickerBtn" class="btn btn-date">选择日期</button>
+    </div>
+    <div id="calendarPopover" class="calendar-popover hidden">
+      <div class="calendar-header">
+        <button type="button" id="prevMonthBtn" class="calendar-nav-btn">‹</button>
+        <div id="calendarMonthLabel" class="calendar-month-label"></div>
+        <button type="button" id="nextMonthBtn" class="calendar-nav-btn">›</button>
+      </div>
+      <div class="calendar-weekdays">
+        <span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span>
+      </div>
+      <div id="calendarDays" class="calendar-days"></div>
+      <div class="calendar-actions">
+        <button type="button" id="clearDatesBtn" class="calendar-action-btn">清空已选</button>
+        <button type="button" id="closeDatePickerBtn" class="calendar-action-btn calendar-action-primary">完成</button>
+      </div>
+    </div>
+    <div id="selectedDatesList" class="selected-dates-list"></div>
+    <input type="hidden" id="datesInput" />
+    <p class="hint">弹出日历后可连续多选，已选日期显示在下方。</p>
+    <label class="mt">时间范围（开始时间落在此区间才抢）</label>
+    <div class="row">
+      <select id="timeRangeStart" class="grow">
+        <option value="10am">10am</option>
+        <option value="12pm">12pm</option>
+        <option value="2pm" selected>2pm</option>
+        <option value="4pm">4pm</option>
+        <option value="6pm">6pm</option>
+        <option value="8pm">8pm</option>
+        <option value="9pm">9pm</option>
+      </select>
+      <span>至</span>
+      <select id="timeRangeEnd" class="grow">
+        <option value="12pm">12pm</option>
+        <option value="2pm">2pm</option>
+        <option value="4pm" selected>4pm</option>
+        <option value="6pm">6pm</option>
+        <option value="8pm">8pm</option>
+        <option value="9pm">9pm</option>
+        <option value="10pm">10pm</option>
+      </select>
+    </div>
+    <label for="preferredStart" class="mt">优先开始时间</label>
+    <select id="preferredStart">
+      <option value="">无偏好</option>
+      <option value="10am">10am</option>
+      <option value="12pm">12pm</option>
+      <option value="2pm">2pm</option>
+      <option value="4pm">4pm</option>
+      <option value="6pm">6pm</option>
+      <option value="8pm">8pm</option>
+      <option value="9pm">9pm</option>
+    </select>
+    <div class="row mt">
+      <button id="monitorStartBtn" class="btn primary" type="button">开始监控</button>
+      <button id="monitorStopBtn" class="btn" type="button" disabled>停止</button>
+    </div>
+    <pre id="monitorLog" class="pre log-sm"></pre>
+  </section>
+
+  <section id="captureCard" class="card hidden online-only">
+    <h2>约仓结果（可改）</h2>
+    <p class="hint">首次约成会按 ASN 记住。关侧栏后可用 ASN 找回。回填装箱表前请核对，有误先改再保存。</p>
+    <label for="captureAsnInput">ASN</label>
+    <input id="captureAsnInput" type="text" placeholder="例如 A06327586PN" />
+    <label for="captureWarehouseInput" class="mt">仓库</label>
+    <input id="captureWarehouseInput" type="text" placeholder="例如 RUH01S" />
+    <label for="captureDateInput" class="mt">送仓日期</label>
+    <input id="captureDateInput" type="date" />
+    <label for="captureSlotInput" class="mt">时段（如 18:00-20:00）</label>
+    <input id="captureSlotInput" type="text" placeholder="18:00-20:00" />
+    <p id="captureMeta" class="hint"></p>
+    <div class="row mt">
+      <button id="saveCaptureBtn" class="btn primary" type="button">保存修改</button>
+      <button id="syncPackingBtn" class="btn" type="button">回填装箱表</button>
+    </div>
+    <p id="packingSyncStatus" class="hint"></p>
+  </section>
+
+  <section id="notifyCard" class="card hidden online-only">
+    <h2>发群文案</h2>
+    <pre id="notifyText" class="pre"></pre>
+    <p id="pdfHint" class="hint"></p>
+    <button id="copyBtn" class="btn primary block" type="button">复制文案</button>
+  </section>
+
+  <script src="site-config.js"></script>
+  <script src="api.js"></script>
+  <script src="sidepanel.js"></script>
+  <script src="booking-side.js"></script>
+  <!-- site-config 提供四店预设与 URL 识别 -->
+</body>
+</html>

@@ -1,5 +1,11 @@
 import { Router } from "express";
+import { requireCapability } from "../../auth/permissions.js";
 import type { AppState, SalesFact } from "../../common/types.js";
+import {
+  buildCatalogDisplayMap,
+  catalogDisplayOf,
+} from "../../common/catalog-display.js";
+import { parsePageQuery, slicePage } from "../../common/page-query.js";
 
 function sumSalesFacts(facts: SalesFact[]) {
   let units = 0;
@@ -29,9 +35,11 @@ function sumSalesFacts(facts: SalesFact[]) {
  * 销量统计：
  * - 主数据 = salesFacts（SOP Sales，SKU×日）
  * - 补充 = orders（履约单据，非日销量主表）
+ * 权限：超管 + 运营主管（sales.read）；普通运营用 dashboard 概况
  */
 export function createSalesRouter(getState: () => AppState) {
   const router = Router();
+  router.use(requireCapability("sales.read"));
 
   router.get("/summary", (_req, res) => {
     const state = getState();
@@ -64,15 +72,31 @@ export function createSalesRouter(getState: () => AppState) {
     });
   });
 
-  router.get("/facts", (_req, res) => {
-    const facts = [...getState().salesFacts].sort((a, b) =>
-      a.date === b.date
-        ? a.partnerSku.localeCompare(b.partnerSku)
-        : b.date.localeCompare(a.date),
-    );
+  router.get("/facts", (req, res) => {
+    const state = getState();
+    const pageQ = parsePageQuery(req.query as Record<string, unknown>, {
+      pageSize: 100,
+      maxPageSize: 500,
+    });
+    const display = buildCatalogDisplayMap(state);
+    const facts = [...state.salesFacts]
+      .sort((a, b) =>
+        a.date === b.date
+          ? a.partnerSku.localeCompare(b.partnerSku)
+          : b.date.localeCompare(a.date),
+      )
+      .map((f) => {
+        const d = catalogDisplayOf(display, f.partnerSku);
+        return {
+          ...f,
+          title: d.title,
+          imageUrl: d.imageUrl,
+        };
+      });
+    const paged = slicePage(facts, pageQ);
     res.json({
-      data: facts.slice(0, 500),
-      meta: { source: "NOON salesFacts", total: facts.length },
+      data: paged.data,
+      meta: { source: "NOON salesFacts", ...paged.meta },
     });
   });
 
@@ -81,10 +105,24 @@ export function createSalesRouter(getState: () => AppState) {
     res.json({ data: topSkus, meta: { source: "NOON salesFacts" } });
   });
 
-  router.get("/orders", (_req, res) => {
+  router.get("/orders", (req, res) => {
+    const pageQ = parsePageQuery(req.query as Record<string, unknown>, {
+      pageSize: 100,
+      maxPageSize: 500,
+    });
+    const orders = [...getState().orders].sort((a, b) =>
+      String(b.placedAt ?? b.updatedAt ?? "").localeCompare(
+        String(a.placedAt ?? a.updatedAt ?? ""),
+      ),
+    );
+    const paged = slicePage(orders, pageQ);
     res.json({
-      data: getState().orders,
-      meta: { source: "NOON orders", role: "fulfillment_supplement" },
+      data: paged.data,
+      meta: {
+        source: "NOON orders",
+        role: "fulfillment_supplement",
+        ...paged.meta,
+      },
     });
   });
 

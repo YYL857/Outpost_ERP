@@ -2,8 +2,41 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/png" href="/favicon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700;900&family=Outfit:wght@300;400;500;600;700&family=Syne:wght@600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <script>
+      (function () {
+        try {
+          var key = "outpost-theme";
+          var pref = null;
+          try {
+            pref = localStorage.getItem(key);
+          } catch (e1) {}
+          if (pref !== "light" && pref !== "dark" && pref !== "system") {
+            try {
+              pref = sessionStorage.getItem(key);
+            } catch (e2) {}
+          }
+          if (pref !== "light" && pref !== "dark" && pref !== "system") pref = "system";
+          var dark =
+            pref === "dark" ||
+            (pref === "system" &&
+              window.matchMedia("(prefers-color-scheme: dark)").matches);
+          var theme = dark ? "dark" : "light";
+          var root = document.documentElement;
+          root.dataset.theme = theme;
+          root.style.colorScheme = theme;
+          root.classList.remove("theme-light", "theme-dark");
+          root.classList.add(theme === "dark" ? "theme-dark" : "theme-light");
+        } catch (e) {}
+      })();
+    </script>
     <title>慧运营</title>
   </head>
   <body>

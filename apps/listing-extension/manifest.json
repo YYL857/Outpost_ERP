@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "Outpost Listing Competitor Capture",
+  "version": "0.1.4",
+  "description": "Capture a single Noon SA PDP into Outpost Listing competitor inbox.",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": [
+    "https://www.noon.com/*",
+    "http://127.0.0.1/*",
+    "http://localhost/*",
+    "http://*/*"
+  ],
+  "action": {
+    "default_title": "Capture PDP → Listing",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.noon.com/saudi-en/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

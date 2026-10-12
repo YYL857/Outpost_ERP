@@ -5,8 +5,8 @@
       "id": "product",
       "label": "产品表",
       "kind": "spreadsheet",
-      "url": "https://example.feishu.cn/sheets/REPLACE_PRODUCT_TOKEN",
-      "spreadsheetToken": "REPLACE_PRODUCT_TOKEN",
+      "url": "https://ecnpehzqqtsp.feishu.cn/sheets/KAk6sa3PKhKeI8tlT2rcIdyInMd",
+      "spreadsheetToken": "KAk6sa3PKhKeI8tlT2rcIdyInMd",
       "sheetTitles": ["产品", "产品表每日信息", "到仓成本", "查找代码表"],
       "targetDomain": "local_cost_dims",
       "enabled": true
@@ -33,8 +33,36 @@
       "label": "账目表",
       "kind": "spreadsheet",
       "spreadsheetToken": "REPLACE_ACCOUNTS_TOKEN",
-      "sheetTitles": ["产品采购", "公司入账", "公司开支-杂项"],
+      "url": "https://ecnpehzqqtsp.feishu.cn/sheets/DQNCsZKPQh6J4qtphMLcMDhinxc",
+      "sheetTitles": ["产品采购", "产品包装采购", "公司入账", "公司开支-杂项"],
       "targetDomain": "purchase_cash",
+      "enabled": true
+    },
+    {
+      "id": "freight-rates",
+      "label": "货代大纲",
+      "kind": "bitable",
+      "url": "https://oig1oe49gnv.feishu.cn/wiki/REPLACE_WIKI_TOKEN?table=REPLACE_TABLE_ID",
+      "bitableTableId": "REPLACE_TABLE_ID",
+      "targetDomain": "raw_only",
+      "enabled": true
+    },
+    {
+      "id": "monthly-deals",
+      "label": "月度Deals表",
+      "kind": "wiki",
+      "url": "https://ecnpehzqqtsp.feishu.cn/wiki/R44ZwRT8oiXYvokEgIJcYUm3nQb",
+      "wikiToken": "R44ZwRT8oiXYvokEgIJcYUm3nQb",
+      "targetDomain": "raw_only",
+      "enabled": true
+    },
+    {
+      "id": "info-check",
+      "label": "信息检查表",
+      "kind": "wiki",
+      "url": "https://ecnpehzqqtsp.feishu.cn/wiki/UFZvwSeSui4FoIkxs7Oc4DMynyz",
+      "wikiToken": "UFZvwSeSui4FoIkxs7Oc4DMynyz",
+      "targetDomain": "raw_only",
       "enabled": true
     }
   ]

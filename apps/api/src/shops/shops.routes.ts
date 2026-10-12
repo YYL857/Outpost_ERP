@@ -1,6 +1,7 @@
+import { join } from "node:path";
 import { Router } from "express";
 import type { AppState } from "../common/types.js";
-import { applyEnvToNoon, loadState, saveState } from "../data/store.js";
+import { applyEnvToNoon, saveState } from "../data/store.js";
 import { loadEnv } from "../config/env.js";
 import { clearNoonApiGatewayCache } from "../platforms/noon/http.js";
 import type { AppRepository } from "../data/repo/types.js";
@@ -10,24 +11,17 @@ import {
   getActiveShop,
   loadRegistry,
   registerShopFromCredentials,
-  saveRegistry,
 } from "./registry.js";
-
-function replaceInMemoryState(
-  getState: () => AppState,
-  repo: AppRepository & { replaceState?: (s: AppState) => void },
-  loaded: AppState,
-) {
-  if (typeof repo.replaceState === "function") {
-    repo.replaceState(loaded);
-    return;
-  }
-  const cur = getState();
-  for (const key of Object.keys(cur) as (keyof AppState)[]) {
-    delete (cur as Record<string, unknown>)[key as string];
-  }
-  Object.assign(cur, loaded);
-}
+import {
+  getShopState,
+  reloadShopState,
+  resolveCurrentShopId,
+  setShopState,
+  setSystemActiveShop,
+} from "./state-cache.js";
+import type { AuthedRequest } from "../auth/middleware.js";
+import { requireAdmin } from "../auth/middleware.js";
+import { setSelectedShopId } from "../auth/workspace.js";
 
 function applyShopToState(shop: ShopRecord, loaded: AppState) {
   loaded.store.id = shop.id;
@@ -40,41 +34,21 @@ function applyShopToState(shop: ShopRecord, loaded: AppState) {
   }
 }
 
-function switchToShop(
-  getState: () => AppState,
-  repo: AppRepository & { replaceState?: (s: AppState) => void },
-  nextShop: ShopRecord,
-  opts?: { persistCurrent?: boolean },
-) {
-  if (opts?.persistCurrent !== false) {
-    saveState(getState());
-  }
-
-  const registry = loadRegistry();
-  registry.activeShopId = nextShop.id;
-  saveRegistry(registry);
-  applyShopEnv(nextShop);
-  clearNoonApiGatewayCache();
-
-  const env = loadEnv();
-  const loaded = applyEnvToNoon(loadState(), env);
-  applyShopToState(nextShop, loaded);
-  replaceInMemoryState(getState, repo, loaded);
-  saveState(getState());
-}
-
 export function createShopsRouter(
-  getState: () => AppState,
-  repo: AppRepository & { replaceState?: (s: AppState) => void },
+  _getState: () => AppState,
+  _repo: AppRepository & { replaceState?: (s: AppState) => void },
 ) {
   const router = Router();
 
-  router.get("/", (_req, res) => {
+  router.get("/", (req, res) => {
     const registry = loadRegistry();
-    const active = getActiveShop(registry);
+    const user = (req as AuthedRequest).user;
+    const selectedId = resolveCurrentShopId();
+    const syncDefaultId = getActiveShop(registry).id;
     res.json({
       data: {
-        activeShopId: active.id,
+        activeShopId: selectedId,
+        syncDefaultShopId: syncDefaultId,
         shops: registry.shops.map((s) => ({
           id: s.id,
           name: s.name,
@@ -83,17 +57,16 @@ export function createShopsRouter(
           rootDir: s.rootDir,
           countryCode: s.countryCode,
           noonMode: s.noonMode,
-          isActive: s.id === active.id,
+          isActive: s.id === selectedId,
+          isSyncDefault: s.id === syncDefaultId,
         })),
+        userId: user?.id ?? null,
       },
     });
   });
 
-  /**
-   * 店铺录入：前端传入本机 Service Account JSON 绝对路径。
-   * 服务端读取 project_code 写入 shops-registry.json，不入库私钥内容。
-   */
-  router.post("/register", (req, res) => {
+  /** 店铺录入：仅超管 */
+  router.post("/register", requireAdmin, (req, res) => {
     const credentialsFile = String(req.body?.credentialsFile ?? "").trim();
     const name = String(req.body?.name ?? "").trim();
     const countryCode = String(req.body?.countryCode ?? "sa").trim() as
@@ -105,6 +78,7 @@ export function createShopsRouter(
       | "portal"
       | "mock";
     const setActive = req.body?.setActive !== false;
+    const setSyncDefault = Boolean(req.body?.setSyncDefault);
 
     if (!credentialsFile) {
       res.status(400).json({ error: "请填写凭证 JSON 的本机绝对路径" });
@@ -127,22 +101,25 @@ export function createShopsRouter(
         noonMode,
       });
 
+      const user = (req as AuthedRequest).user!;
       let switched = false;
       if (setActive) {
-        const active = getActiveShop();
-        if (active.id !== result.shop.id) {
-          switchToShop(getState, repo, result.shop);
-          switched = true;
-        } else {
-          // 同店更新凭证路径：刷新 env + 网关缓存
-          applyShopEnv(result.shop);
-          clearNoonApiGatewayCache();
-          const env = loadEnv();
-          const loaded = applyEnvToNoon(getState(), env);
-          applyShopToState(result.shop, loaded);
-          saveState(loaded);
-        }
+        setSelectedShopId(user.id, result.shop.id);
+        switched = true;
       }
+      if (setSyncDefault) {
+        setSystemActiveShop(result.shop);
+      } else if (getActiveShop().id === result.shop.id) {
+        applyShopEnv(result.shop);
+        clearNoonApiGatewayCache(result.shop.id);
+        const env = loadEnv();
+        const loaded = applyEnvToNoon(getShopState(result.shop.id), env);
+        applyShopToState(result.shop, loaded);
+        setShopState(result.shop.id, loaded);
+        saveState(loaded, join(result.shop.rootDir, "json"));
+      }
+
+      const selectedId = setActive ? result.shop.id : resolveCurrentShopId();
 
       res.json({
         data: {
@@ -154,12 +131,14 @@ export function createShopsRouter(
             rootDir: result.shop.rootDir,
             countryCode: result.shop.countryCode,
             noonMode: result.shop.noonMode,
-            isActive: getActiveShop().id === result.shop.id,
+            isActive: result.shop.id === selectedId,
+            isSyncDefault: getActiveShop().id === result.shop.id,
           },
           created: result.created,
           updated: result.updated,
           switched,
-          activeShopId: getActiveShop().id,
+          activeShopId: selectedId,
+          syncDefaultShopId: getActiveShop().id,
         },
         message: result.created
           ? `已录入店铺 ${result.shop.name}（${result.shop.projectCode}）`
@@ -172,21 +151,19 @@ export function createShopsRouter(
     }
   });
 
-  /** 从磁盘重载当前店 state（外部脚本 Impex/影刀入库后刷新内存） */
   router.post("/reload", (_req, res) => {
-    const shop = getActiveShop();
-    const env = loadEnv();
-    const loaded = applyEnvToNoon(loadState(), env);
-    applyShopToState(shop, loaded);
-    replaceInMemoryState(getState, repo, loaded);
+    const shopId = resolveCurrentShopId();
+    const registry = loadRegistry();
+    const shop = registry.shops.find((s) => s.id === shopId) ?? getActiveShop();
+    const loaded = reloadShopState(shop.id);
     res.json({
       data: {
         shopId: shop.id,
-        catalog: getState().catalog.length,
-        salesFacts: getState().salesFacts.length,
-        feeSnapshots: getState().feeSnapshots.length,
-        adsFacts: getState().adsFacts.length,
-        stock: getState().stock.length,
+        catalog: loaded.catalog.length,
+        salesFacts: loaded.salesFacts.length,
+        feeSnapshots: loaded.feeSnapshots.length,
+        adsFacts: loaded.adsFacts.length,
+        stock: loaded.stock.length,
       },
       message: `已从磁盘重载 ${shop.name}`,
     });
@@ -194,29 +171,41 @@ export function createShopsRouter(
 
   router.post("/active", (req, res) => {
     const shopId = String(req.body?.shopId ?? "").trim();
+    const setSyncDefault = Boolean(req.body?.setSyncDefault);
     const registry = loadRegistry();
     const nextShop = registry.shops.find((s) => s.id === shopId);
     if (!nextShop) {
       res.status(404).json({ error: `未知店铺: ${shopId}` });
       return;
     }
-    if (nextShop.id === registry.activeShopId) {
-      res.json({
-        data: { activeShopId: nextShop.id, switched: false },
-        message: `已是当前店铺 ${nextShop.name}`,
-      });
+
+    const user = (req as AuthedRequest).user;
+    if (!user) {
+      res.status(401).json({ error: "未登录" });
       return;
     }
 
-    switchToShop(getState, repo, nextShop);
+    const prevSelected = resolveCurrentShopId();
+    setSelectedShopId(user.id, nextShop.id);
+
+    if (setSyncDefault) {
+      if (user.role !== "admin") {
+        res.status(403).json({ error: "仅超管可修改系统默认同步店" });
+        return;
+      }
+      setSystemActiveShop(nextShop);
+    }
+
+    const state = getShopState(nextShop.id);
 
     res.json({
       data: {
         activeShopId: nextShop.id,
-        switched: true,
-        catalogCount: getState().catalog.length,
+        switched: prevSelected !== nextShop.id,
+        syncDefaultShopId: getActiveShop().id,
+        catalogCount: state.catalog.length,
         credentialsFile: nextShop.credentialsFile,
-        dataDir: process.env.OUTPOST_DATA_DIR,
+        dataDir: join(nextShop.rootDir, "json"),
       },
       message: `已切换到 ${nextShop.name}（${nextShop.projectCode}）`,
     });

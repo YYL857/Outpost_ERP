@@ -2,9 +2,16 @@
  * Partner Impex：异步导出 CSV（绕过 Seller Lab / Akamai）。
  * 流程：create → poll status → download_url → CSV 文本
  * Noon 限额约 30 分钟内 20 次；命中后进程内冷却（OUTPOST_IMPEX_COOLDOWN_MS）。
+ * 冷却按店铺 / 凭证分桶，A 店撞限不堵 B 店。
  */
 import type { NoonConnection } from "../../common/types.js";
-import { NoonHttpError, noonRequest, readNoonCredentialsFile } from "./http.js";
+import { getContextShopId } from "../../auth/context.js";
+import {
+  getNoonCredentialsPath,
+  NoonHttpError,
+  noonRequest,
+  readNoonCredentialsFile,
+} from "./http.js";
 
 export const IMPEX_EXPORT_CATEGORIES = {
   catalog: "noon_catalog_catalogexport",
@@ -43,8 +50,14 @@ function withImpexLock<T>(fn: () => Promise<T>): Promise<T> {
   return next;
 }
 
-/** 命中 Noon 导出限额后的进程内冷却（poller / inbox / 手动同步共用） */
-let impexCooldownUntil = 0;
+/** 命中 Noon 导出限额后的进程内冷却（按店 / 凭证分桶） */
+const impexCooldownUntilByKey = new Map<string, number>();
+
+export function impexCooldownKey(shopId?: string | null): string {
+  const id = shopId?.trim() || getContextShopId();
+  if (id) return `shop:${id}`;
+  return `cred:${getNoonCredentialsPath()}`;
+}
 
 function impexCooldownMs(): number {
   return Math.max(
@@ -53,24 +66,36 @@ function impexCooldownMs(): number {
   );
 }
 
-export function getImpexCooldownRemainingMs(): number {
-  return Math.max(0, impexCooldownUntil - Date.now());
+export function getImpexCooldownRemainingMs(shopId?: string | null): number {
+  const until = impexCooldownUntilByKey.get(impexCooldownKey(shopId)) ?? 0;
+  return Math.max(0, until - Date.now());
 }
 
-export function isImpexCoolingDown(): boolean {
-  return getImpexCooldownRemainingMs() > 0;
+export function isImpexCoolingDown(shopId?: string | null): boolean {
+  return getImpexCooldownRemainingMs(shopId) > 0;
 }
 
-export function markImpexExportLimitHit(cooldownMs = impexCooldownMs()): void {
-  impexCooldownUntil = Math.max(impexCooldownUntil, Date.now() + cooldownMs);
+export function markImpexExportLimitHit(
+  cooldownMs = impexCooldownMs(),
+  shopId?: string | null,
+): void {
+  const key = impexCooldownKey(shopId);
+  const until = Date.now() + cooldownMs;
+  const prev = impexCooldownUntilByKey.get(key) ?? 0;
+  impexCooldownUntilByKey.set(key, Math.max(prev, until));
 }
 
-export function assertImpexAvailable(): void {
-  const rem = getImpexCooldownRemainingMs();
+export function assertImpexAvailable(shopId?: string | null): void {
+  const rem = getImpexCooldownRemainingMs(shopId);
   if (rem <= 0) return;
   throw new Error(
     `Impex 导出冷却中（约 ${Math.ceil(rem / 60_000)} 分钟后可再试；Noon 限额约 30 分钟内 20 次）。`,
   );
+}
+
+/** 测试用：清空全部冷却桶 */
+export function resetImpexCooldownsForTests(): void {
+  impexCooldownUntilByKey.clear();
 }
 
 export function isImpexLimitMessage(msg: string): boolean {

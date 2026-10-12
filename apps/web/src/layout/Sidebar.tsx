@@ -1,14 +1,21 @@
 import { NavLink } from "react-router-dom";
-import outpostMark from "../assets/outpost-mark.svg";
-import { MODULES, type AppModule } from "../modules";
-
-const groups = [...new Set(MODULES.map((m) => m.group))];
+import outpostMark from "../assets/outpost-mark.png";
+import { canAccessModule, MODULES, type AppModule } from "../modules";
+import type { UserRole } from "../api";
 
 type Props = {
   onOpen: (mod: AppModule) => void;
+  role?: UserRole | null;
+  /** @deprecated 用 role；保留兼容 */
+  isAdmin?: boolean;
 };
 
-export function Sidebar({ onOpen }: Props) {
+export function Sidebar({ onOpen, role, isAdmin }: Props) {
+  const effectiveRole =
+    role ?? (isAdmin ? ("admin" as UserRole) : ("ops" as UserRole));
+  const visible = MODULES.filter((m) => canAccessModule(m, effectiveRole));
+  const groups = [...new Set(visible.map((m) => m.group))];
+
   return (
     <aside className="sidebar">
       <div className="brand">
@@ -29,19 +36,21 @@ export function Sidebar({ onOpen }: Props) {
       {groups.map((group) => (
         <div className="nav-group" key={group}>
           <div className="nav-group-title">{group}</div>
-          {MODULES.filter((m) => m.group === group).map((mod) => (
-            <NavLink
-              key={mod.key}
-              to={mod.path}
-              className={({ isActive }) =>
-                `nav-item${isActive ? " active" : ""}`
-              }
-              onClick={() => onOpen(mod)}
-            >
-              <span>{mod.title}</span>
-              <span className="nav-phase">{mod.phase}</span>
-            </NavLink>
-          ))}
+          {visible
+            .filter((m) => m.group === group)
+            .map((mod) => (
+              <NavLink
+                key={mod.key}
+                to={mod.path}
+                className={({ isActive }) =>
+                  `nav-item${isActive ? " active" : ""}`
+                }
+                onClick={() => onOpen(mod)}
+              >
+                <span>{mod.title}</span>
+                <span className="nav-phase">{mod.phase}</span>
+              </NavLink>
+            ))}
         </div>
       ))}
     </aside>

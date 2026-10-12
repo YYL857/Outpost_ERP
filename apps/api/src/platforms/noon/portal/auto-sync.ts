@@ -1,8 +1,13 @@
 import type { AppState } from "../../../common/types.js";
 import { saveState } from "../../../data/store.js";
+import { pickLiveImpexDomains } from "../../../modules/sync/live-impex-domains.js";
 import { pullDomain } from "../../../modules/sync/pipeline.js";
 import { enrichCatalogImages } from "../../../modules/catalog/enrich-images.js";
-import { runAutoIngest, type AutoIngestResult } from "./auto-ingest.js";
+import {
+  ingestLatestSalesFile,
+  runAutoIngest,
+  type AutoIngestResult,
+} from "./auto-ingest.js";
 
 export type AutoSyncResult = {
   ingest: AutoIngestResult;
@@ -15,8 +20,8 @@ export type AutoSyncResult = {
  * 全自动同步主入口：
  * - live：Partner API Impex（配额约 30 分钟 20 次）
  *   · 空 Catalog → 只拉 catalog
- *   · 已有 Catalog → 优先补齐 sales/fees（Catalog 可视化关键），最多 2 域
- *   · ads 无 Impex，靠影刀 → portal-imports
+ *   · 已有 Catalog → 优先补齐 stock（FBN/Supermall）/ sales/fees；价库过期则定期重拉 catalog
+ *   · 每次最多 2 域；ads/sales 门户表走 Playwright → portal-imports
  * - portal/mock：仅扫描 portal-imports 入库（不再使用浏览器登录态 / SOP）
  */
 export async function runAutoSync(
@@ -27,6 +32,21 @@ export async function runAutoSync(
   void opts?.skipProbe;
 
   if (state.noon.mode === "live") {
+    // Playwright/门户 CSV 与 Impex 并行：live 以前只拉 Impex，导表会躺在 portal-imports。
+    // 不 force 全目录，避免把旧 FBN 影刀表盖掉 Impex 分仓。
+    const ingest = await runAutoIngest(state, { force: false });
+    if (opts?.forceIngest) {
+      const sales = await ingestLatestSalesFile(state);
+      if (!sales.skipped && sales.fileName) {
+        ingest.imported += 1;
+        ingest.details.push({
+          file: sales.fileName,
+          domain: "sales",
+          count: sales.count ?? 0,
+        });
+      }
+    }
+
     const domains = pickLiveImpexDomains(state);
     const parts: string[] = [];
     for (const domain of domains) {
@@ -48,7 +68,8 @@ export async function runAutoSync(
       // 补图失败不阻断主同步
     }
     const message =
-      `live Impex · ${parts.join(" · ") || "noop"} · Catalog:${catalogCount}` +
+      `portal 入库新${ingest.imported}/跳过${ingest.skipped}` +
+      ` · live Impex · ${parts.join(" · ") || "noop"} · Catalog:${catalogCount}` +
       ` · Stock:${state.stock.length} · Sales:${state.salesFacts.length}` +
       ` · Fees:${state.feeSnapshots.length} · Ads:${state.adsFacts.length}` +
       (imagesUpdated ? ` · 补图:${imagesUpdated}` : "");
@@ -56,14 +77,7 @@ export async function runAutoSync(
     state.noon.portal.lastImportSummary = message;
     saveState(state);
     return {
-      ingest: {
-        importDir: "",
-        scanned: 0,
-        imported: 0,
-        skipped: 0,
-        failed: [],
-        details: [],
-      },
+      ingest,
       catalogCount,
       imagesUpdated,
       message,
@@ -94,23 +108,6 @@ export async function runAutoSync(
   saveState(state);
 
   return { ingest, catalogCount, imagesUpdated, message };
-}
-
-/** Impex 配额约 2 次/30min：优先填满 Catalog 可视化缺口 */
-function pickLiveImpexDomains(
-  state: AppState,
-): Array<"catalog" | "orders" | "sales" | "fees"> {
-  if (state.catalog.length === 0) return ["catalog"];
-  const out: Array<"catalog" | "orders" | "sales" | "fees"> = [];
-  if (state.salesFacts.length === 0) out.push("sales");
-  if (state.feeSnapshots.length === 0 && out.length < 2) out.push("fees");
-  if (out.length === 0) {
-    // 都已有数据：轮换刷新 sales + fees（比反复 catalog 更利于经营视图）
-    out.push("sales", "fees");
-  } else if (out.length === 1 && state.orders.length === 0) {
-    out.push("orders");
-  }
-  return out.slice(0, 2);
 }
 
 function domainCount(

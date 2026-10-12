@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   api,
@@ -8,6 +8,15 @@ import {
   type ProvenanceSlice,
   type SalesWindow,
 } from "../api";
+import { ClearableInput } from "../components/ClearableInput";
+import { PageBar } from "../components/PageBar";
+import {
+  AdminSyncOnlyHint,
+  DataFreshnessBanner,
+  useIsAdmin,
+} from "../components/DataFreshnessBanner";
+
+const PAGE_SIZE = 50;
 
 function pct(n: number | null | undefined) {
   if (n == null) return "—";
@@ -18,6 +27,17 @@ function num(n: number | null | undefined, digits = 2) {
   if (n == null || Number.isNaN(n)) return "—";
   if (Number.isInteger(n)) return String(n);
   return n.toFixed(digits);
+}
+
+function shipQtyText(
+  qty: { air: number; sea: number; single: number } | null | undefined,
+) {
+  if (!qty) return "—";
+  const parts: string[] = [];
+  if (qty.air > 0) parts.push(`空运 ${num(qty.air, 0)}`);
+  if (qty.sea > 0) parts.push(`海运 ${num(qty.sea, 0)}`);
+  if (qty.single > 0) parts.push(`单品 ${num(qty.single, 0)}`);
+  return parts.length ? parts.join(" · ") : "—";
 }
 
 function money(n: number | null | undefined, suffix = "") {
@@ -73,24 +93,6 @@ function marginClass(margin: number | null | undefined) {
   return "cat-pill danger";
 }
 
-/** 数据越齐分越高：官方 Catalog + 本地齐 + 费用/利润/规格有数 → 排前面 */
-function completenessScore(r: CatalogRow): number {
-  let s = 0;
-  if (r.listingType !== "orphan") s += 100;
-  if (r.local?.align === "matched") s += 50;
-  else if (r.local?.align === "partial") s += 25;
-  if ((r.specs?.purchaseCost ?? 0) > 0) s += 15;
-  if ((r.specs?.weightKg ?? 0) > 0 || (r.specs?.volumeCm3 ?? 0) > 0) s += 10;
-  if ((r.fees?.commissionRate ?? 0) > 0 || (r.fees?.outboundFee ?? 0) > 0) s += 15;
-  if (r.profit?.sar != null) s += 20;
-  if (r.imageUrl) s += 5;
-  if (r.price > 0) s += 5;
-  if (r.ads?.d7?.hasData || r.ads?.latest?.hasData) s += 5;
-  if ((r.sales?.d7?.units ?? 0) > 0) s += 5;
-  if (r.isActive) s += 3;
-  return s;
-}
-
 function roasClass(roas: number | null | undefined) {
   if (roas == null) return "cat-pill idle";
   if (roas >= 3) return "cat-pill ok";
@@ -115,9 +117,9 @@ function adsTip(r: CatalogRow, provenance?: CatalogProvenance | null): string {
   const file = provenance?.domains.ads.fileName ?? "文件未知";
   const path = provenance?.domains.ads.filePath ?? "";
   if (!r.ads?.d7?.hasData && !r.ads?.latest?.hasData) {
-    return `无广告匹配 · 来源 影刀昨日 · 报表 ${range} · ${file}${path ? `\n${path}` : ""}`;
+    return `无广告匹配 · 来源 昨日广告表 · 报表 ${range} · ${file}${path ? `\n${path}` : ""}`;
   }
-  return `影刀广告·昨日 · 报表 ${range} · ${file}${path ? `\n${path}` : ""}\n仅昨日报时，列内 ROAS≈昨日（非 7 日累计广告）`;
+  return `广告·昨日 · 报表 ${range} · ${file}${path ? `\n${path}` : ""}\n仅昨日报时，列内 ROAS≈昨日（非 7 日累计广告）`;
 }
 
 function shortIso(iso: string | null | undefined) {
@@ -157,11 +159,14 @@ function ProvenanceBoard({ p }: { p: CatalogProvenance }) {
   return (
     <section className="cat-prov-board">
       <div className="cat-prov-head">
-        <strong>数据时效</strong>
+        <strong>今日入库拼表</strong>
         <span>今天 {p.today ?? "—"}</span>
+        <Link className="btn" to="/sync-health" style={{ marginLeft: "auto" }}>
+          {older.length > 0 ? "缺口与一键补齐 → 数据对齐" : "数据对齐"}
+        </Link>
       </div>
       <p className="cat-prov-lead">
-        同一行商品把下面几份数据拼在一起。数据时间节点是数字代表的业务日，入库时间是写进本系统的时间，两者可以不是同一天。
+        同一行商品把下面几份数据拼在一起。跨店缺天数、补齐链路与告警统一看「数据对齐」页；此处仅看本店今日是否已入库。
       </p>
       <div className="cat-prov-summary">
         <span className="cat-prov-chip ok">
@@ -277,6 +282,7 @@ function alignLabel(align: string | undefined) {
 }
 
 export function CatalogPage() {
+  const isAdmin = useIsAdmin();
   const [rows, setRows] = useState<CatalogRow[]>([]);
   const [error, setError] = useState("");
   const [syncing, setSyncing] = useState(false);
@@ -284,10 +290,20 @@ export function CatalogPage() {
   const [ingesting, setIngesting] = useState(false);
   const [hint, setHint] = useState("");
   const [q, setQ] = useState("");
+  const [qDebounced, setQDebounced] = useState("");
   const [onlyFbn, setOnlyFbn] = useState(false);
   const [onlyAds, setOnlyAds] = useState(false);
   const [onlyMissingLocal, setOnlyMissingLocal] = useState(false);
+  const [page, setPage] = useState(1);
+  const [pageCount, setPageCount] = useState(1);
+  const [matched, setMatched] = useState(0);
+  const [total, setTotal] = useState(0);
+  const [withImage, setWithImage] = useState(0);
+  const [withAds, setWithAds] = useState(0);
+  const [hiddenNoDisplay, setHiddenNoDisplay] = useState(0);
+  const [orphanInMatched, setOrphanInMatched] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [alignMeta, setAlignMeta] = useState<{
     matched: number;
     partial: number;
@@ -297,21 +313,138 @@ export function CatalogPage() {
   } | null>(null);
   const [provenance, setProvenance] = useState<CatalogProvenance | null>(null);
   const [buybackRate, setBuybackRate] = useState<number | null>(null);
+  const prefetchRef = useRef<
+    Map<
+      string,
+      {
+        data: CatalogRow[];
+        meta: Awaited<ReturnType<typeof api.getCatalog>>["meta"];
+      }
+    >
+  >(new Map());
+  const loadSeq = useRef(0);
+  const autoEnrichTried = useRef(false);
 
-  async function load() {
-    const res = await api.getCatalog();
-    setRows(res.data);
-    setAlignMeta(res.meta?.localAlign ?? null);
-    setProvenance(res.meta?.provenance ?? null);
-    return res.data;
-  }
+  useEffect(() => {
+    const t = window.setTimeout(() => setQDebounced(q), 280);
+    return () => window.clearTimeout(t);
+  }, [q]);
+
+  const filterSig = `${qDebounced}|${onlyFbn}|${onlyAds}|${onlyMissingLocal}`;
+  const prevFilterSig = useRef(filterSig);
+
+  const filterKey = useCallback(
+    (p: number) => `${p}|${filterSig}`,
+    [filterSig],
+  );
+
+  const applyMeta = useCallback(
+    (
+      data: CatalogRow[],
+      meta: Awaited<ReturnType<typeof api.getCatalog>>["meta"],
+      targetPage: number,
+    ) => {
+      setRows(data);
+      setAlignMeta(meta?.localAlign ?? null);
+      setProvenance(meta?.provenance ?? null);
+      setMatched(meta?.matched ?? data.length);
+      setTotal(meta?.total ?? data.length);
+      setPageCount(meta?.pageCount ?? 1);
+      setPage(meta?.page ?? targetPage);
+      setWithImage(meta?.withImage ?? 0);
+      setWithAds(meta?.withAds ?? 0);
+      setHiddenNoDisplay(meta?.hiddenNoDisplay ?? 0);
+      setOrphanInMatched(meta?.orphanInMatched ?? 0);
+    },
+    [],
+  );
+
+  const load = useCallback(
+    async (opts?: { page?: number; silent?: boolean }) => {
+      const targetPage = opts?.page ?? page;
+      const seq = ++loadSeq.current;
+      const key = filterKey(targetPage);
+      const hit = prefetchRef.current.get(key);
+      if (hit) {
+        prefetchRef.current.delete(key);
+        if (seq === loadSeq.current) applyMeta(hit.data, hit.meta, targetPage);
+        const nextPage = (hit.meta?.page ?? targetPage) + 1;
+        const nextCount = hit.meta?.pageCount ?? 1;
+        if (nextPage <= nextCount) {
+          const nextKey = filterKey(nextPage);
+          if (!prefetchRef.current.has(nextKey)) {
+            void api
+              .getCatalog({
+                page: nextPage,
+                pageSize: PAGE_SIZE,
+                q: qDebounced || undefined,
+                onlyFbn,
+                onlyAds,
+                onlyMissingLocal,
+              })
+              .then((res) => {
+                prefetchRef.current.set(nextKey, {
+                  data: res.data,
+                  meta: res.meta,
+                });
+              })
+              .catch(() => undefined);
+          }
+        }
+        return hit.data;
+      }
+
+      if (!opts?.silent) setLoading(true);
+      try {
+        const res = await api.getCatalog({
+          page: targetPage,
+          pageSize: PAGE_SIZE,
+          q: qDebounced || undefined,
+          onlyFbn,
+          onlyAds,
+          onlyMissingLocal,
+        });
+        if (seq !== loadSeq.current) return res.data;
+        applyMeta(res.data, res.meta, targetPage);
+
+        const nextPage = (res.meta?.page ?? targetPage) + 1;
+        const nextCount = res.meta?.pageCount ?? 1;
+        if (nextPage <= nextCount) {
+          const nextKey = filterKey(nextPage);
+          if (!prefetchRef.current.has(nextKey)) {
+            void api
+              .getCatalog({
+                page: nextPage,
+                pageSize: PAGE_SIZE,
+                q: qDebounced || undefined,
+                onlyFbn,
+                onlyAds,
+                onlyMissingLocal,
+              })
+              .then((next) => {
+                prefetchRef.current.set(nextKey, {
+                  data: next.data,
+                  meta: next.meta,
+                });
+              })
+              .catch(() => undefined);
+          }
+        }
+        return res.data;
+      } finally {
+        if (seq === loadSeq.current && !opts?.silent) setLoading(false);
+      }
+    },
+    [page, filterKey, qDebounced, onlyFbn, onlyAds, onlyMissingLocal, applyMeta],
+  );
 
   async function refresh() {
     setRefreshing(true);
     setError("");
     setHint("刷新中…");
+    prefetchRef.current.clear();
     try {
-      const data = await load();
+      const data = await load({ page });
       try {
         const ship = await api.getShipping();
         setBuybackRate(ship.data.buybackRate);
@@ -319,7 +452,7 @@ export function CatalogPage() {
         /* ignore */
       }
       setHint(
-        `已刷新 ${new Date().toLocaleTimeString()} · ${data.length} 行（完整度高的在前）`,
+        `已刷新 ${new Date().toLocaleTimeString()} · 本页 ${data?.length ?? 0} 行`,
       );
     } catch (e) {
       setError(e instanceof Error ? e.message : "刷新失败");
@@ -330,7 +463,15 @@ export function CatalogPage() {
   }
 
   useEffect(() => {
-    load()
+    if (prevFilterSig.current !== filterSig) {
+      prevFilterSig.current = filterSig;
+      prefetchRef.current.clear();
+      if (page !== 1) {
+        setPage(1);
+        return;
+      }
+    }
+    load({ page })
       .then(async (data) => {
         try {
           const ship = await api.getShipping();
@@ -338,15 +479,28 @@ export function CatalogPage() {
         } catch {
           /* ignore */
         }
-        const missing = data.filter((r) => !r.imageUrl).length;
-        if (data.length > 0 && missing === data.length) {
+        const needImages = Boolean(
+          data?.some(
+            (r) =>
+              r.listingType !== "orphan" &&
+              Boolean(r.noonSku?.trim()) &&
+              !(r.imageUrl || "").trim(),
+          ),
+        );
+        if (!autoEnrichTried.current && page === 1 && needImages) {
+          autoEnrichTried.current = true;
           setHint("Catalog 导出不含图片，正在用 Content API 补图…");
           setEnriching(true);
           try {
-            const res = await api.enrichCatalogImages({ onlyMissing: true });
+            const res = await api.enrichCatalogImages({
+              onlyMissing: true,
+              limit: 500,
+            });
             setHint(res.message ?? res.data.message);
-            await load();
+            prefetchRef.current.clear();
+            await load({ page: 1 });
           } catch (e) {
+            autoEnrichTried.current = false;
             setError(e instanceof Error ? e.message : "补图失败");
           } finally {
             setEnriching(false);
@@ -354,12 +508,13 @@ export function CatalogPage() {
         }
       })
       .catch((e: Error) => setError(e.message));
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, filterSig]);
 
   async function assemblySync() {
     setSyncing(true);
     setError("");
-    setHint("汇总同步中（Noon → 影刀广告入库 → 飞书）…");
+    setHint("汇总同步中（Noon → 广告入库 → 飞书）…");
     try {
       const res = await api.assemblySync();
       const stages = res.data.stages
@@ -378,8 +533,9 @@ export function CatalogPage() {
       setHint(
         `${res.message ?? res.data.message}${stages ? ` · ${stages}` : ""}${align}${adsHint}`,
       );
-      await load();
-    } catch (e) {
+      prefetchRef.current.clear();
+      await load({ page: 1 });
+      setPage(1);    } catch (e) {
       setError(e instanceof Error ? e.message : "汇总同步失败");
     } finally {
       setSyncing(false);
@@ -393,7 +549,9 @@ export function CatalogPage() {
     try {
       const res = await api.autoSync({ skipSop: false });
       setHint(res.message ?? res.data.message);
-      await load();
+      prefetchRef.current.clear();
+      await load({ page: 1 });
+      setPage(1);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Noon 同步失败");
     } finally {
@@ -408,7 +566,8 @@ export function CatalogPage() {
     try {
       const res = await api.enrichCatalogImages({ onlyMissing: true });
       setHint(res.message ?? res.data.message);
-      await load();
+      prefetchRef.current.clear();
+      await load({ page });
     } catch (e) {
       setError(e instanceof Error ? e.message : "补图失败");
     } finally {
@@ -423,7 +582,8 @@ export function CatalogPage() {
     try {
       const res = await api.ingestFeishuLocal();
       setHint(res.message ?? "飞书本地域已入库");
-      await load();
+      prefetchRef.current.clear();
+      await load({ page });
     } catch (e) {
       setError(e instanceof Error ? e.message : "飞书本地入库失败");
     } finally {
@@ -431,73 +591,56 @@ export function CatalogPage() {
     }
   }
 
-  const filtered = useMemo(() => {
-    const needle = q.trim().toLowerCase();
-    const list = rows.filter((r) => {
-      if (onlyFbn && (r.inventory?.fbn ?? 0) <= 0) return false;
-      if (onlyAds && !r.ads?.d7?.hasData && !r.ads?.latest?.hasData) return false;
-      if (onlyMissingLocal && r.local?.align === "matched") return false;
-      if (!needle) return true;
-      return (
-        r.partnerSku.toLowerCase().includes(needle) ||
-        r.noonSku?.toLowerCase().includes(needle) ||
-        r.title.toLowerCase().includes(needle)
-      );
-    });
-    return list.sort((a, b) => {
-      const d = completenessScore(b) - completenessScore(a);
-      if (d !== 0) return d;
-      return a.partnerSku.localeCompare(b.partnerSku);
-    });
-  }, [rows, q, onlyFbn, onlyAds, onlyMissingLocal]);
-
-  const withImage = rows.filter((r) => Boolean(r.imageUrl)).length;
-  const withAds = rows.filter(
-    (r) => r.ads?.d7?.hasData || r.ads?.latest?.hasData,
-  ).length;
-
   return (
     <div>
       <h1 className="page-title">Catalog 产品库</h1>
       <p className="page-desc">
-        以 PSKU 对齐汇总：Noon（价/库/销/费）+ 影刀广告（默认昨日）+ 飞书（成本/尺寸）。
-        列表按数据完整度排序。币种：售价/佣金/出仓/税费/利润为 SAR；采购价/头程为 RMB。
+        以 PSKU 对齐汇总：Noon（价/库/销/费）+ 广告（默认昨日）+ 飞书（成本/尺寸）。
+        服务端分页（每页 {PAGE_SIZE}），筛选/排序在服务端完成；下一页异步预取。列表优先在线链接，同层再按数据完整度排序；无图且无有效标题默认隐藏，搜索可召回。币种：售价/佣金/出仓/税费/利润为 SAR；采购价/头程为 RMB。
         税费=(出仓+佣金)×1.15；利润 RMB 需在首页配置「回购汇率」。
       </p>
       {provenance ? <ProvenanceBoard p={provenance} /> : null}
+      <DataFreshnessBanner compact />
+      {isAdmin === false ? (
+        <AdminSyncOnlyHint action="汇总同步 / 仅 Noon / 飞书入库" />
+      ) : null}
       <div className="row" style={{ marginBottom: 14, flexWrap: "wrap" }}>
-        <button
-          className="btn btn-primary"
-          type="button"
-          disabled={syncing || ingesting}
-          onClick={assemblySync}
-        >
-          {syncing ? "汇总同步中…" : "汇总同步"}
-        </button>
-        <button
-          className="btn"
-          type="button"
-          disabled={syncing || ingesting}
-          onClick={noonOnlySync}
-        >
-          仅 Noon
-        </button>
-        <button
-          className="btn"
-          type="button"
-          disabled={enriching || syncing || ingesting}
-          onClick={enrichImages}
-        >
-          {enriching ? "补图中…" : "补全图片"}
-        </button>
-        <button
-          className="btn"
-          type="button"
-          disabled={ingesting || syncing}
-          onClick={ingestFeishuLocal}
-        >
-          {ingesting ? "入库中…" : "入库飞书本地"}
-        </button>
+        {isAdmin ? (
+          <>
+            <button
+              className="btn btn-primary"
+              type="button"
+              disabled={syncing || ingesting}
+              onClick={assemblySync}
+            >
+              {syncing ? "汇总同步中…" : "汇总同步"}
+            </button>
+            <button
+              className="btn"
+              type="button"
+              disabled={syncing || ingesting}
+              onClick={noonOnlySync}
+            >
+              仅 Noon
+            </button>
+            <button
+              className="btn"
+              type="button"
+              disabled={enriching || syncing || ingesting}
+              onClick={enrichImages}
+            >
+              {enriching ? "补图中…" : "补全图片"}
+            </button>
+            <button
+              className="btn"
+              type="button"
+              disabled={ingesting || syncing}
+              onClick={ingestFeishuLocal}
+            >
+              {ingesting ? "入库中…" : "入库飞书本地"}
+            </button>
+          </>
+        ) : null}
         <button
           className="btn"
           type="button"
@@ -506,7 +649,7 @@ export function CatalogPage() {
         >
           {refreshing ? "刷新中…" : "刷新"}
         </button>
-        <input
+        <ClearableInput
           className="input"
           style={{ minWidth: 220, flex: "1 1 220px" }}
           placeholder="搜索 PSKU / SKU / 标题"
@@ -538,24 +681,35 @@ export function CatalogPage() {
           缺本地成本/尺寸
         </label>
         <span className="muted" style={{ marginLeft: "auto" }}>
-          {filtered.length}/{rows.length} 行 · 有图 {withImage} · 有广告 {withAds}
-          {rows.some((r) => r.listingType === "orphan")
-            ? ` · 含未在线 ${rows.filter((r) => r.listingType === "orphan").length}`
+          {loading ? "加载中… · " : ""}
+          本页 {rows.length} / 匹配 {matched} / 全库 {total} · 有图 {withImage} · 有广告{" "}
+          {withAds}
+          {hiddenNoDisplay > 0 && !qDebounced
+            ? ` · 已隐藏无展示 ${hiddenNoDisplay}`
             : ""}
+          {orphanInMatched > 0 ? ` · 含未在线 ${orphanInMatched}` : ""}
           {alignMeta
             ? ` · 本地齐 ${alignMeta.matched} / 缺半 ${alignMeta.partial} / 缺 ${alignMeta.missing}`
             : ""}
         </span>
       </div>
       {buybackRate != null && buybackRate <= 0 ? (
-        <p style={{ color: "var(--danger)", marginTop: 8 }}>
-          首页「回购汇率」未配置（当前 0）：利润可出 SAR（未扣人民币采购/头程），RMB
-          利润与扣采需先填写汇率后再刷新。{" "}
-          <Link to="/">去首页填写</Link>
+        <p className="alert warn" style={{ marginTop: 8, marginBottom: 0 }}>
+          回购汇率未配置：表格里的 SAR 毛利未扣人民币采购/头程，RMB 毛利暂不可用。{" "}
+          <Link to="/">去首页填写后刷新</Link>
         </p>
       ) : null}
       {hint && <p className="muted">{hint}</p>}
       {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
+
+      <PageBar
+        page={page}
+        pageCount={pageCount}
+        total={matched}
+        pageSize={PAGE_SIZE}
+        busy={loading || refreshing}
+        onChange={setPage}
+      />
 
       <div className="card cat-table-wrap">
         <table className="table cat-table">
@@ -581,22 +735,22 @@ export function CatalogPage() {
                     provenance?.domains.ads.filePath,
                   ]
                     .filter(Boolean)
-                    .join("\n") || "影刀导出昨日广告"
+                    .join("\n") || "昨日广告表"
                 }
               >
                 广告投产
-                <div className="cat-th-sub">影刀 · 默认昨日报表</div>
+                <div className="cat-th-sub">默认昨日报表</div>
               </th>
               <th style={{ minWidth: 160 }} title={sliceTitle(provenance, "sales")}>
                 补货计划
-                <div className="cat-th-sub">日均取近 7 日销量</div>
+                <div className="cat-th-sub">FBN ÷ 近 90 日日均</div>
               </th>
               <th
                 style={{ minWidth: 170 }}
                 title={sliceTitle(provenance, "fees", "shipping", "cost")}
               >
                 费用
-                <div className="cat-th-sub">平台费 + 本地头程</div>
+                <div className="cat-th-sub">平台费 + 头程均价 + 装箱件数</div>
               </th>
               <th
                 style={{ minWidth: 120 }}
@@ -620,15 +774,16 @@ export function CatalogPage() {
             </tr>
           </thead>
           <tbody>
-            {filtered.length === 0 && (
+            {rows.length === 0 && (
               <tr>
                 <td colSpan={9} className="muted">
-                  暂无数据。请先「汇总同步」（影刀昨日广告须已落入本店 portal-imports）。
-                  广告文件示例：ads_sku_2026-09-16_2026-09-16.csv。
+                  {loading
+                    ? "加载中…"
+                    : "暂无数据。请先「汇总同步」（昨日广告须已落入本店 portal-imports）。广告文件示例：ads_sku_2026-09-16_2026-09-16.csv。"}
                 </td>
               </tr>
             )}
-            {filtered.map((r) => {
+            {rows.map((r) => {
               const rep = replenishLabel(r.replenish?.status ?? "unknown");
               const primaryAds = adsPrimary(r);
               const localAlign = alignLabel(r.local?.align);
@@ -637,7 +792,7 @@ export function CatalogPage() {
                   ? `${num(r.specs.lengthCm, 1)}×${num(r.specs.widthCm, 1)}×${num(r.specs.heightCm, 1)}`
                   : "—";
               const freightLabel =
-                (r.fees?.freightMode ?? "air") === "sea" ? "海运" : "空运";
+                r.fees?.freightMode === "sea" ? "海运" : "空运";
               return (
                 <tr key={r.partnerSku}>
                   <td>
@@ -665,6 +820,22 @@ export function CatalogPage() {
                             <span className="cat-sale-k">售价</span>{" "}
                             {r.price > 0 ? money(r.price, r.currency) : "—"}
                           </span>
+                          {r.activePrice != null &&
+                          r.activePrice > 0 &&
+                          r.listPrice != null &&
+                          r.listPrice > 0 &&
+                          Math.abs(r.activePrice - r.listPrice) >= 0.01 ? (
+                            <span
+                              className="cat-tag warn"
+                              title={`Noon Catalog Export：active_price=${r.activePrice}，底价 price=${r.listPrice}`}
+                            >
+                              活动价 {money(r.activePrice, r.currency)}
+                              <span className="cat-sale-k">
+                                {" "}
+                                / 底价 {money(r.listPrice, r.currency)}
+                              </span>
+                            </span>
+                          ) : null}
                           <span className={`cat-tag ${r.isActive ? "ok" : "idle"}`}>
                             {r.isActive ? "在售" : "下架"}
                           </span>
@@ -688,10 +859,19 @@ export function CatalogPage() {
                   </td>
                   <td>
                     <div className="cat-stack">
-                      <Metric label="FBN" value={r.inventory?.fbn ?? 0} />
+                      <Metric label="FBN" value={r.inventory?.fbn ?? 0} title="实际可售库存；FBN=0 链接下架" />
+                      <Metric
+                        label="Supermall"
+                        value={r.inventory?.supermall ?? 0}
+                        title="仅仓内分布参考，不计入可售/合计"
+                      />
                       <Metric label="FBP" value={r.inventory?.fbp ?? 0} />
                       <Metric label="在途" value={r.inventory?.inTransit ?? 0} />
-                      <Metric label="合计" value={r.inventory?.total ?? r.stockQty ?? 0} />
+                      <Metric
+                        label="可售合计"
+                        value={r.inventory?.total ?? r.stockQty ?? 0}
+                        title="FBN+FBP，不含 supermall"
+                      />
                     </div>
                   </td>
                   <td>
@@ -700,6 +880,7 @@ export function CatalogPage() {
                       <SaleWindowRow label="7日" w={r.sales?.d7} />
                       <SaleWindowRow label="14日" w={r.sales?.d14} />
                       <SaleWindowRow label="30日" w={r.sales?.d30} />
+                      <SaleWindowRow label="90日" w={r.sales?.d90} />
                     </div>
                   </td>
                   <td title={adsTip(r, provenance)}>
@@ -715,7 +896,7 @@ export function CatalogPage() {
                       </div>
                       <Metric
                         label="广告花费"
-                        title="影刀报表中的广告花费"
+                        title="广告报表中的广告花费"
                         value={primaryAds?.hasData ? money(primaryAds.spend) : "—"}
                       />
                       <Metric
@@ -763,6 +944,7 @@ export function CatalogPage() {
                     <div className="cat-stack cat-stack-tight">
                       <Metric
                         label="头程"
+                        title="（空运计费重×单价 + 海运体积×分档）÷ 2；缺体积时只用空运"
                         value={money(r.fees?.headhaul, "RMB")}
                       />
                       {(r.fees?.freightEst ?? 0) > 0 ? (
@@ -771,7 +953,18 @@ export function CatalogPage() {
                           value={money(r.fees?.freightEst, "SAR")}
                         />
                       ) : (
-                        <Metric label="方式" value={freightLabel} />
+                        <>
+                          <Metric
+                            label="方式"
+                            title="飞书产品表「默认补货方式」。头程金额仍是空运和海运的平均值"
+                            value={freightLabel}
+                          />
+                          <Metric
+                            label="件数"
+                            title="装箱表「装箱明细」按运输方式汇总的数量，不参与头程金额"
+                            value={shipQtyText(r.fees?.shipQty)}
+                          />
+                        </>
                       )}
                       <Metric
                         label="佣金"
@@ -866,6 +1059,15 @@ export function CatalogPage() {
           </tbody>
         </table>
       </div>
+
+      <PageBar
+        page={page}
+        pageCount={pageCount}
+        total={matched}
+        pageSize={PAGE_SIZE}
+        busy={loading || refreshing}
+        onChange={setPage}
+      />
     </div>
   );
 }

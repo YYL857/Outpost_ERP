@@ -97,7 +97,7 @@ export type PortalCache = {
     partner_sku: string;
     warehouse_code: string;
     qty: number;
-    fulfillment?: "fbn" | "fbp" | "unknown";
+    fulfillment?: "fbn" | "fbp" | "supermall" | "transit" | "unknown";
     in_transit_qty?: number;
     updated_at: string;
   }>;
@@ -126,6 +126,7 @@ export type PortalCache = {
     orders: number;
     views: number;
     clicks: number;
+    atc?: number;
     updated_at: string;
   }>;
   updatedAt: string | null;
@@ -187,6 +188,11 @@ export type InboxEvent = {
   processedAt: string | null;
   error: string | null;
   attempts: number;
+  /**
+   * false = 旁路写入，不刷新该域 syncJobs.lastSuccessAt。
+   * Catalog 顺带的 FBN/FBP 库存提示必须为 false，否则会冒充「库存已同步」。
+   */
+  countsTowardJobSuccess?: boolean;
 };
 
 export type NoonOrder = {
@@ -209,14 +215,28 @@ export type CatalogItem = {
   noonSku: string;
   imageUrl: string;
   price: number;
+  /** Noon Catalog Export 的 active_price；无活动价则为 null */
+  activePrice?: number | null;
+  /** Noon Catalog Export 的 price 底价；用来判断是否真有活动价 */
+  listPrice?: number | null;
   currency: string;
   /** 自建 / 目录等 */
   listingType: string;
   source: "NOON";
   updatedAt: string;
+  /**
+   * Catalog Export `stock_fbn_net`＝门户 Active Net Stock · FBN。
+   * 与 Impex 分仓 ledger 分开存；补货/可卖天优先用此值。
+   */
+  stockFbnNet?: number | null;
 };
 
-export type FulfillmentType = "fbn" | "fbp" | "unknown";
+export type FulfillmentType =
+  | "fbn"
+  | "fbp"
+  | "supermall"
+  | "transit"
+  | "unknown";
 
 export type StockItem = {
   partnerSku: string;
@@ -280,6 +300,8 @@ export type AdsFact = {
   orders: number;
   views: number;
   clicks: number;
+  /** Add to Cart；旧数据缺省 0 */
+  atc: number;
   updatedAt: string;
 };
 
@@ -320,6 +342,151 @@ export type ReplenishConfig = {
   updatedAt: string;
 };
 
+/**
+ * 飞书日报运营快照（补货计划 / 空海在途 / 已采购）。
+ * 主键 partnerSku；同 SKU 以最新日报 sheet 覆盖。
+ */
+export type FeishuOpsSnapshot = {
+  partnerSku: string;
+  sheetTitle: string;
+  reportDate: string | null;
+  productName: string;
+  airInTransit: number;
+  seaInTransit: number;
+  purchasedQty: number;
+  airReplenishPlan: number;
+  seaReplenishPlan: number;
+  fbn: number | null;
+  updatedAt: string;
+  source: string;
+};
+
+/** 飞书账目表「产品采购」行 */
+export type PurchaseLine = {
+  id: string;
+  partnerSku: string;
+  productName: string;
+  qty: number;
+  unitCost: number;
+  amount: number;
+  supplier: string;
+  purchasedAt: string | null;
+  status: string;
+  remark: string;
+  sheetTitle: string;
+  updatedAt: string;
+  source: string;
+  /** 1688 订单号（飞书「订单号」列） */
+  orderId?: string;
+  /** 快递单号（飞书初值或 1688 回填） */
+  trackingNo?: string;
+  /** 物流/在途状态 */
+  transitStatus?: string;
+  /** 预计送达 YYYY-MM-DD */
+  etaDate?: string | null;
+  logisticsUpdatedAt?: string | null;
+};
+
+/**
+ * 采购到货确认（分批到仓）：按「订单+SKU」记累计已收，不随飞书同步覆盖。
+ * 到齐后从「今日要处理」清出。
+ */
+export type PurchaseArrivalReceipt = {
+  key: string;
+  partnerSku: string;
+  orderId: string;
+  lineId: string;
+  qtyOrdered: number;
+  receivedQty: number;
+  updatedAt: string;
+  updatedBy: string;
+};
+
+/** 飞书账目表入账/开支行 */
+export type CashLedgerEntry = {
+  id: string;
+  kind: "income" | "expense" | "other";
+  amount: number;
+  category: string;
+  occurredAt: string | null;
+  remark: string;
+  sheetTitle: string;
+  updatedAt: string;
+  source: string;
+};
+
+/** Noon Impex invoicesandcreditnotes */
+export type InvoiceDoc = {
+  id: string;
+  invoiceNr: string;
+  invoiceType: string;
+  status: string;
+  currency: string;
+  amount: number;
+  issuedAt: string | null;
+  dueAt: string | null;
+  partnerSku: string;
+  updatedAt: string;
+};
+
+/**
+ * Noon Statement of Account 按自然月聚合（账单口径，≠ Transaction View）。
+ * 金额单位 SAR；平台费/VAT 存正数便于展示。
+ */
+export type SettlementMonth = {
+  month: string;
+  netProceedsSar: number;
+  vatSar: number;
+  platformFeesSar: number;
+  feeBreakdown: {
+    advertising: number;
+    referral: number;
+    fbnOutbound: number;
+    returnAdmin: number;
+  };
+  otherFeesSar: number;
+  minDate: string;
+  maxDate: string;
+  rowCount: number;
+  /** Details EN = Net Proceeds 行数（约等于周结段数） */
+  statementCount: number;
+  /** 是否存在月末日的 Net Proceeds 段 */
+  hasMonthEndStatement: boolean;
+  sourceFile: string;
+  importedAt: string;
+};
+
+export type GpCloseGateCheck = {
+  id: string;
+  ok: boolean;
+  detail: string;
+};
+
+/** 月度毛利关账快照（终稿）。导入 CSV 只更新草稿，不覆盖本记录。 */
+export type GpMonthClose = {
+  month: string;
+  status: "closed" | "superseded";
+  closedAt: string;
+  closedBy: "schedule" | "manual";
+  fx: number;
+  sourceFile: string;
+  gate: GpCloseGateCheck[];
+  caveats: string[];
+  missingSkus: string[];
+  netProceedsSar: number;
+  platformFeesSar: number;
+  vatSar: number;
+  purchaseCny: number;
+  headhaulCny: number;
+  packagingCny: number;
+  pureProfitCny: number;
+  coverage: {
+    minDate: string;
+    maxDate: string;
+    statementCount: number;
+  };
+};
+
 /** 上架任务（本地业务，额度扣减） */
 export type ListingTask = {
   id: string;
@@ -358,6 +525,20 @@ export type AppState = {
   skuLocalCosts: SkuLocalCost[];
   skuDims: SkuDims[];
   replenishConfigs: ReplenishConfig[];
+  /** 飞书日报补货/在途 */
+  feishuOpsSnapshots: FeishuOpsSnapshot[];
+  /** 飞书产品采购明细 */
+  purchaseLines: PurchaseLine[];
+  /** 采购分批到货确认（本地，不写飞书） */
+  purchaseArrivalReceipts: PurchaseArrivalReceipt[];
+  /** 飞书入账/开支 */
+  cashLedger: CashLedgerEntry[];
+  /** Noon 发票/贷记单 */
+  invoiceDocs: InvoiceDoc[];
+  /** Noon Statement of Account 月结算（账单口径） */
+  settlementMonths: SettlementMonth[];
+  /** 月度毛利关账终稿；每店独立 */
+  gpMonthCloses: GpMonthClose[];
   listings: ListingTask[];
   favorites: FavoriteItem[];
   /** 网页/导出采集缓冲 */

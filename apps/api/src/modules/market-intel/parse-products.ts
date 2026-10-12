@@ -31,13 +31,27 @@ function pickListSignals(obj: Record<string, unknown>): {
     (typeof obj.soldRecentlyText === "string" && obj.soldRecentlyText) ||
     (typeof obj.sold_recently_text === "string" && obj.sold_recently_text) ||
     null;
+  const tagPool = [
+    ...(Array.isArray(obj.cardTags) ? obj.cardTags : []),
+    ...(Array.isArray(obj.tags) ? obj.tags : []),
+  ]
+    .map((t) => String(t || ""))
+    .filter(Boolean);
+  const tagSold =
+    tagPool.find((t) => /sold\s+recently/i.test(t)) ||
+    tagPool.find((t) => /\d[\d.,]*\s*[KkMm]?\+?\s*sold/i.test(t)) ||
+    null;
   const soldRecently =
     parseSoldRecentlyCount(obj.soldRecently) ??
     parseSoldRecentlyCount(obj.sold_recently) ??
-    parseSoldRecentlyCount(text);
+    parseSoldRecentlyCount(text) ??
+    parseSoldRecentlyCount(tagSold);
   return {
     soldRecently,
-    soldRecentlyText: text ?? (soldRecently != null ? `${soldRecently}+ Sold Recently` : null),
+    soldRecentlyText:
+      text ??
+      (typeof tagSold === "string" && /sold/i.test(tagSold) ? tagSold : null) ??
+      (soldRecently != null ? `${soldRecently}+ Sold Recently` : null),
     isBestSeller: Boolean(obj.isBestSeller || obj.is_best_seller),
     isAd: Boolean(obj.isAd || obj.is_ad || obj.sponsored),
   };
@@ -244,14 +258,21 @@ export function normalizeFlatProducts(
 const SELLER_NAME_JUNK =
   /^(all products( by this seller)?|sold by|fulfilled by|partner|noon|seller|store|shop|view (all )?products|products by|best\s*sellers?|bestsellers)$/i;
 
+const SELLER_NAME_PRODUCTISH =
+  /\b(lunch|bag|camera|projector|iphone|ipad|tv|charger|power\s*bank|headphones?|earbuds?|watch|printer|lens|controller)\b/i;
+
 function cleanSellerName(name: string | null): string | null {
   if (!name) return null;
   const s = name.replace(/\s+/g, " ").trim();
-  if (s.length < 2 || s.length > 80) return null;
+  if (s.length < 2 || s.length > 48) return null;
   if (SELLER_NAME_JUNK.test(s)) return null;
   if (/all products by this seller/i.test(s)) return null;
+  if (s.split(/\s+/).length >= 6) return null;
+  if (SELLER_NAME_PRODUCTISH.test(s)) return null;
   return s;
 }
+
+export { cleanSellerName };
 
 function parseSeller(raw: unknown): SellerIntel | null {
   const o = asRecord(raw);

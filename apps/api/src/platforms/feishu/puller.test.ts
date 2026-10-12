@@ -107,6 +107,15 @@ const mockHttp: FeishuHttpClient = {
       ["N1SA002", "8", "20"],
     ];
   },
+  async resolveWikiBitableAppToken() {
+    throw new Error("unused");
+  },
+  async resolveWikiSpreadsheetToken() {
+    throw new Error("unused");
+  },
+  async readBitableTable() {
+    throw new Error("unused");
+  },
 };
 
 const cfg = loadFeishuDocsConfig({ docsFilePath: docsPath });

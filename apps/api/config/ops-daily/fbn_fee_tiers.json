@@ -1,0 +1,50 @@
+{
+  "note": "FBN 出库费档位；与 FLOW fbn_fee_tiers.yaml 共维。Phase4 自算出库费用。键 lte25/gt25 ≡ Prep <=25/>25。",
+  "packaging_weight_kg": 0.02,
+  "weight_step": 0.05,
+  "dim_limits_cm": {
+    "Small envelope": { "longest": 20, "median": 15, "shortest": 1 },
+    "Standard envelope": { "longest": 33, "median": 23, "shortest": 2.5 },
+    "Large envelope": { "longest": 33, "median": 23, "shortest": 5 },
+    "Standard parcel": { "longest": 50, "median": 40, "shortest": 30 },
+    "Oversize": { "longest": 100, "median": 80, "shortest": 60 }
+  },
+  "packaging_weight_by_dim_kg": {
+    "Small envelope": 0.02,
+    "Standard envelope": 0.04,
+    "Large envelope": 0.04,
+    "Standard parcel": 0.1,
+    "Oversize": 0.24,
+    "Extra oversize": 0.24,
+    "default": 0.4
+  },
+  "weight_upgrade": {
+    "Small envelope": { "max_kg": 0.1, "next": "Standard envelope" },
+    "Standard envelope": { "max_kg": 0.5, "next": "Large envelope" },
+    "Large envelope": { "max_kg": 1.0, "next": "Standard parcel" }
+  },
+  "fees_sar": {
+    "Small envelope": { "lte25": 5.5, "gt25": 7.5 },
+    "Standard envelope": {
+      "bands": [
+        { "max_kg": 0.1, "lte25": 6.0, "gt25": 8.0 },
+        { "max_kg": 0.25, "lte25": 6.5, "gt25": 8.5 },
+        { "max_kg": 0.5, "lte25": 7.0, "gt25": 9.0 }
+      ]
+    },
+    "Large envelope": {
+      "bands": [
+        { "max_kg": 0.5, "lte25": 8.0, "gt25": 10.0 },
+        { "max_kg": 1.0, "lte25": 9.0, "gt25": 11.0 }
+      ]
+    },
+    "Standard parcel": {
+      "bands": [
+        { "max_kg": 2.0, "lte25": 12.0, "gt25": 14.0 },
+        { "max_kg": 5.0, "lte25": 16.0, "gt25": 18.0 }
+      ]
+    },
+    "Oversize": { "default": 24.0 },
+    "Extra oversize": { "default": 30.0 }
+  }
+}

@@ -50,7 +50,60 @@ function assertThrows(
 
 {
   const p = parseFeishuDocUrl("https://foo.feishu.cn/wiki/wikcnXYZ");
-  assert(p.kind === "wiki", "wiki kind");
+  assert(p.kind === "wiki", "wiki kind without table");
+}
+
+{
+  const p = parseFeishuDocUrl(
+    "https://foo.feishu.cn/wiki/wikcnXYZ?table=tblABC&view=vew1",
+  );
+  assert(p.kind === "bitable", "wiki+table => bitable");
+  assert(p.token === "wikcnXYZ", "wiki token");
+  assert(p.tableId === "tblABC", "table id");
+}
+
+{
+  const docs = parseFeishuDocsFile(
+    {
+      version: 1,
+      docs: [
+        {
+          id: "freight-rates",
+          label: "货代大纲",
+          kind: "bitable",
+          url: "https://foo.feishu.cn/wiki/wikcn1?table=tbl1",
+          targetDomain: "raw_only",
+          enabled: true,
+        },
+      ],
+    },
+    "mem",
+  );
+  assert(docs[0]!.kind === "bitable", "bitable doc kind");
+  assert(docs[0]!.bitableTableId === "tbl1", "table from url");
+  assert(docs[0]!.wikiToken === "wikcn1", "wiki token from url");
+}
+
+
+{
+  const docs = parseFeishuDocsFile(
+    {
+      version: 1,
+      docs: [
+        {
+          id: "monthly-deals",
+          label: "月度Deals表",
+          kind: "wiki",
+          url: "https://ecnpehzqqtsp.feishu.cn/wiki/R44ZwRT8oiXYvokEgIJcYUm3nQb",
+          targetDomain: "raw_only",
+        },
+      ],
+    },
+    "mem-wiki-sheet",
+  );
+  assert(docs[0]!.kind === "wiki", "wiki spreadsheet kind");
+  assert(docs[0]!.wikiToken === "R44ZwRT8oiXYvokEgIJcYUm3nQb", "wiki token");
+  assert(!docs[0]!.spreadsheetToken, "token resolved at pull time");
 }
 
 assertThrows(

@@ -13,16 +13,25 @@
     "test:feishu-normalize": "tsx src/platforms/feishu/normalize/normalize.test.ts",
     "test:feishu-ingest": "tsx src/platforms/feishu/ingest/ingest.test.ts",
     "test:assembly-sync": "tsx src/modules/sync/assembly-sync.test.ts",
+    "test:gap-audit": "tsx src/modules/sync/gap-audit.test.ts",
     "feishu:pull-raw": "tsx scripts/feishu-pull-raw.ts",
     "feishu:normalize": "tsx scripts/feishu-normalize.ts",
     "feishu:ingest-local": "tsx scripts/feishu-ingest-local.ts",
-    "verify:noon-live": "tsx scripts/verify-noon-live.ts"
+    "1688:login-save": "tsx scripts/1688-login-save.ts",
+    "verify:noon-live": "tsx scripts/verify-noon-live.ts",
+    "ops-daily:phase1": "tsx scripts/ops-daily-phase1.ts",
+    "listing-promo:gate": "tsx scripts/listing-promo-sdk-gate.mts",
+    "listing-promo:login": "tsx scripts/listing-promo-sdk-login.mts"
   },
   "dependencies": {
+    "@cursor/sdk": "^1.0.37",
     "cors": "^2.8.5",
     "dotenv": "^17.4.2",
     "express": "^4.21.2",
+    "pdf-lib": "^1.17.1",
+    "playwright": "^1.63.0",
     "sql.js": "^1.14.2",
+    "xlsx": "^0.18.5",
     "zod": "^3.24.2"
   },
   "devDependencies": {

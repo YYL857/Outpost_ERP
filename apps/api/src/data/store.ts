@@ -12,13 +12,20 @@ import { fileURLToPath } from "node:url";
 import type {
   AdsFact,
   AppState,
+  CashLedgerEntry,
   CatalogItem,
   FeeEstimate,
   FeeSnapshot,
+  FeishuOpsSnapshot,
   FulfillmentType,
+  GpMonthClose,
+  InvoiceDoc,
   NoonConnection,
+  PurchaseArrivalReceipt,
+  PurchaseLine,
   ReplenishConfig,
   SalesFact,
+  SettlementMonth,
   ShippingConfig,
   SkuDims,
   SkuLocalCost,
@@ -27,20 +34,28 @@ import type {
   SyncJob,
 } from "../common/types.js";
 import type { AppEnv } from "../config/env.js";
+import { getContextShopId } from "../auth/context.js";
+import { loadRegistry } from "../shops/registry.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const legacyDataDir = join(__dirname, "..", "..", ".data");
 const legacyStatePath = join(legacyDataDir, "state.json");
 
-function resolveDataDir(): string {
+function resolveDataDir(explicit?: string): string {
+  if (explicit?.trim()) return resolve(explicit.trim());
+  const shopId = getContextShopId();
+  if (shopId) {
+    const shop = loadRegistry().shops.find((s) => s.id === shopId);
+    if (shop) return resolve(join(shop.rootDir, "json"));
+  }
   const fromEnv =
     process.env.OUTPOST_DATA_DIR?.trim() || process.env.DATA_DIR?.trim();
   if (fromEnv) return resolve(fromEnv);
   return legacyDataDir;
 }
 
-function getPaths() {
-  const dataDir = resolveDataDir();
+function getPaths(explicitDataDir?: string) {
+  const dataDir = resolveDataDir(explicitDataDir);
   return { dataDir, statePath: join(dataDir, "state.json") };
 }
 
@@ -57,6 +72,12 @@ function migrateLegacyStateIfNeeded(statePath: string, dataDir: string) {
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function positiveCatalogActivePrice(v: unknown): number | null {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.round(n * 100) / 100;
 }
 
 function defaultPortal() {
@@ -160,6 +181,12 @@ function normalizeCatalog(raw: Partial<CatalogItem> & { partnerSku?: string }): 
   if (Number.isNaN(t) || t > nowMs + 24 * 60 * 60 * 1000) {
     updatedAt = new Date(nowMs).toISOString();
   }
+  const stockFbnRaw = (raw as { stockFbnNet?: unknown }).stockFbnNet;
+  let stockFbnNet: number | null = null;
+  if (stockFbnRaw != null && stockFbnRaw !== "") {
+    const n = Math.floor(Number(stockFbnRaw));
+    if (Number.isFinite(n) && n >= 0) stockFbnNet = n;
+  }
   return {
     partnerSku,
     title: String(raw.title ?? partnerSku),
@@ -167,17 +194,26 @@ function normalizeCatalog(raw: Partial<CatalogItem> & { partnerSku?: string }): 
     noonSku: String(raw.noonSku ?? ""),
     imageUrl: String(raw.imageUrl ?? ""),
     price: Number(raw.price ?? 0) || 0,
+    activePrice: positiveCatalogActivePrice(raw.activePrice),
+    listPrice: positiveCatalogActivePrice(raw.listPrice),
     currency: String(raw.currency ?? "SAR") || "SAR",
     listingType: String(raw.listingType ?? ""),
     source: "NOON",
     updatedAt,
+    stockFbnNet,
   };
 }
 
 function normalizeStock(raw: Partial<StockItem> & { partnerSku?: string }): StockItem | null {
   const partnerSku = String(raw.partnerSku ?? "").trim();
   if (!partnerSku) return null;
-  const fulfillment = (["fbn", "fbp", "unknown"].includes(String(raw.fulfillment))
+  const fulfillment = ([
+    "fbn",
+    "fbp",
+    "supermall",
+    "transit",
+    "unknown",
+  ].includes(String(raw.fulfillment))
     ? raw.fulfillment
     : "unknown") as FulfillmentType;
   return {
@@ -246,6 +282,13 @@ export function seed(): AppState {
     skuLocalCosts: [],
     skuDims: [],
     replenishConfigs: [],
+    feishuOpsSnapshots: [],
+    purchaseLines: [],
+    purchaseArrivalReceipts: [],
+    cashLedger: [],
+    invoiceDocs: [],
+    settlementMonths: [],
+    gpMonthCloses: [],
     listings: [],
     favorites: [],
     portalCache: {
@@ -296,10 +339,24 @@ function migrate(raw: Partial<AppState>): AppState {
     salesFacts: (raw.salesFacts as SalesFact[] | undefined) ?? [],
     feeSnapshots: (raw.feeSnapshots as FeeSnapshot[] | undefined) ?? [],
     feeEstimates: (raw.feeEstimates as FeeEstimate[] | undefined) ?? [],
-    adsFacts: (raw.adsFacts as AdsFact[] | undefined) ?? [],
+    adsFacts: ((raw.adsFacts as AdsFact[] | undefined) ?? []).map((f) => ({
+      ...f,
+      atc: typeof f.atc === "number" && Number.isFinite(f.atc) ? f.atc : 0,
+    })),
     skuLocalCosts: (raw.skuLocalCosts as SkuLocalCost[] | undefined) ?? [],
     skuDims: (raw.skuDims as SkuDims[] | undefined) ?? [],
     replenishConfigs: (raw.replenishConfigs as ReplenishConfig[] | undefined) ?? [],
+    feishuOpsSnapshots:
+      (raw.feishuOpsSnapshots as FeishuOpsSnapshot[] | undefined) ?? [],
+    purchaseLines: (raw.purchaseLines as PurchaseLine[] | undefined) ?? [],
+    purchaseArrivalReceipts:
+      (raw.purchaseArrivalReceipts as PurchaseArrivalReceipt[] | undefined) ??
+      [],
+    cashLedger: (raw.cashLedger as CashLedgerEntry[] | undefined) ?? [],
+    invoiceDocs: (raw.invoiceDocs as InvoiceDoc[] | undefined) ?? [],
+    settlementMonths:
+      (raw.settlementMonths as SettlementMonth[] | undefined) ?? [],
+    gpMonthCloses: (raw.gpMonthCloses as GpMonthClose[] | undefined) ?? [],
     listings: raw.listings ?? [],
     favorites: raw.favorites ?? [],
     portalCache: {
@@ -329,10 +386,10 @@ export function applyEnvToNoon(state: AppState, env: AppEnv): AppState {
   return state;
 }
 
-export function loadState(): AppState {
-  const { dataDir, statePath } = getPaths();
-  if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
-  migrateLegacyStateIfNeeded(statePath, dataDir);
+export function loadState(dataDir?: string): AppState {
+  const { dataDir: dir, statePath } = getPaths(dataDir);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  migrateLegacyStateIfNeeded(statePath, dir);
   if (!existsSync(statePath)) {
     const initial = seed();
     writeFileSync(statePath, JSON.stringify(initial, null, 2), "utf8");
@@ -365,9 +422,9 @@ export function loadState(): AppState {
 }
 
 /** 原子写盘，避免 tsx watch / 进程被杀时截断 state.json 导致 API 起不来 */
-export function saveState(state: AppState) {
-  const { dataDir, statePath } = getPaths();
-  if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
+export function saveState(state: AppState, dataDir?: string) {
+  const { dataDir: dir, statePath } = getPaths(dataDir);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   const tmpPath = `${statePath}.${process.pid}.tmp`;
   writeFileSync(tmpPath, JSON.stringify(state, null, 2), "utf8");
   try {
@@ -383,6 +440,6 @@ export function saveState(state: AppState) {
   }
 }
 
-export function getDataDir(): string {
-  return getPaths().dataDir;
+export function getDataDir(dataDir?: string): string {
+  return getPaths(dataDir).dataDir;
 }
