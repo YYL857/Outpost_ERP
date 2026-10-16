@@ -40,7 +40,7 @@ python main.py keepalive otp-probe
 |----|------|
 | IMAP 取码 | `apps/api/scripts/noon-pw-platform/email_otp.py` |
 | 页上填邮箱/OTP | `noon_login_autofill.py` |
-| 接入统一登录 | `session_sync.py`（`OUTPOST_NOON_OTP_AUTO=1`） |
+| 接入统一登录 | `session_sync.py`（无人值守默认开；`OTP_AUTO=0` 才关） |
 | 探针 | `otp_login_probe.py` + `keepalive otp-probe` |
 | 计划任务 bat | `run_otp_probe.bat` |
 | env 模板 | 根目录 `.env.example` |
@@ -48,7 +48,7 @@ python main.py keepalive otp-probe
 
 本机 `.env`（**勿提交**）已含：
 
-- `OUTPOST_NOON_OTP_AUTO=1`
+- 无人值守默认开；仅显式 `OUTPOST_NOON_OTP_AUTO=0` 关闭
 - `OUTPOST_NOON_LOGIN_EMAIL` / `IMAP_USER` = `17727538283@163.com`
 - `OUTPOST_NOON_OTP_IMAP_PASS` = 网易客户端授权码（曾出现在聊天截图，若担心泄露可在 163 设置里重新生成并改 `.env`）
 

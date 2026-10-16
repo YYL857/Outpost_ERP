@@ -11,8 +11,8 @@ import {
 } from "../sync/live-impex-domains.js";
 
 const STALE_ADS_MS = 36 * 60 * 60 * 1000;
-/** 分仓库存超过此时长未真正 Impex → 标 stale（与默认 6h 刷新对齐并留一点缓冲） */
-const STALE_STOCK_MS = 8 * 60 * 60 * 1000;
+/** 分仓库存超过此时长未真正 Impex → 标 stale（与默认 14h 安全网对齐并留缓冲） */
+const STALE_STOCK_MS = 16 * 60 * 60 * 1000;
 
 export type DomainProvenance = {
   source: string;

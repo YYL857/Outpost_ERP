@@ -1,32 +1,18 @@
 /**
- * 启动/手动数据补洞：
- * - 审计各店 sales/orders/ads/catalog/stock/fees
- * - Noon：每一类缺口一次 Impex（调整 from～to 口径）→ 入库清洗
- * - 飞书：无配额限制，缺则直接 pull+normalize+ingest
- * - 广告：缺 ads 时触发 Playwright（python main.py ads ui），不写影刀 pending
+ * 数据对齐 · 一键补齐：
+ * - 只扫本地已有数据（portal-imports / 店内 state / 已落盘飞书）尝试补缺口
+ * - 不再自动跑 Impex、Playwright 广告导出、飞书远端拉取
+ * - 仍缺则给出明确指引：去哪个功能、取什么时段/口径
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import type { AppState } from "../../common/types.js";
-import {
-  isImpexCoolingDown,
-  isImpexLimitMessage,
-} from "../../platforms/noon/impex-client.js";
-import {
-  loadFeishuDocsConfig,
-  normalizeDailyBriefRun,
-  normalizeFeishuRun,
-  pullFeishuRaw,
-} from "../../platforms/feishu/index.js";
 import { ingestFeishuLocalIntoState } from "../../platforms/feishu/ingest/local.js";
 import { ingestFeishuOpsIntoState } from "../../platforms/feishu/ingest/ops.js";
-import { formatFeishuError, isFeishuError } from "../../platforms/feishu/errors.js";
 import {
-  getAdsPwExportStatus,
-  startAdsPwExport,
-} from "../ads/ads-pw-cli.js";
-import { getPwSessionStatus } from "../pw-rpa/session-status.js";
-import { ingestLatestAdsFile, runAutoIngest } from "../../platforms/noon/portal/auto-ingest.js";
+  ingestLatestAdsFile,
+  ingestLatestSalesFile,
+  runAutoIngest,
+} from "../../platforms/noon/portal/auto-ingest.js";
 import {
   getShopState,
   runAsShopAsync,
@@ -34,8 +20,6 @@ import {
 } from "../../shops/state-cache.js";
 import { getHealthGateShopIds } from "../../shops/registry.js";
 import { listLiveImpexShops, listEligibleSyncShops } from "./multi-shop-sync.js";
-import { pullDomain } from "./pipeline.js";
-import { pushAlert } from "./alerts.js";
 import {
   auditShopGaps,
   domainsNeedingFill,
@@ -72,15 +56,13 @@ export type DataBackfillOptions = {
   triggeredBy?: "boot" | "manual" | "schedule";
   /** 只处理这些店；默认健康门禁店（前两家老店） */
   shopIds?: string[];
-  /** 跳过 Noon Impex */
+  /** @deprecated 一键补齐不再拉远程；保留字段以免旧客户端报错 */
   skipNoon?: boolean;
-  /** 跳过飞书 */
+  /** @deprecated 同上 */
   skipFeishu?: boolean;
-  /** 跳过广告 RPA（Playwright）；字段名保留 skipYingdao 兼容旧客户端 */
+  /** @deprecated 同上（旧名 skipYingdao） */
   skipYingdao?: boolean;
-  /** 每店最多打几次 Impex（默认 2，贴近「半小时两次」保守节奏） */
   maxImpexPerShop?: number;
-  /** 全进程本次最多 Impex 次数（默认 4） */
   maxImpexTotal?: number;
   lookbackDays?: number;
 };
@@ -124,50 +106,6 @@ function persistLast(result: DataBackfillResult) {
   }
 }
 
-/** Impex 域优先级：先销售（看板主口径），再订单/费用/价库/库存 */
-const IMPEX_ORDER: GapDomain[] = [
-  "sales",
-  "orders",
-  "fees",
-  "catalog",
-  "stock",
-];
-
-function isImpexDomain(
-  d: GapDomain,
-): d is "sales" | "orders" | "fees" | "catalog" | "stock" {
-  return (
-    d === "sales" ||
-    d === "orders" ||
-    d === "fees" ||
-    d === "catalog" ||
-    d === "stock"
-  );
-}
-
-/**
- * 把游标拨到 fillFrom，让 live-client 的 orderDateRange 一次覆盖缺口～今天。
- */
-async function pullDomainCoveringGap(
-  state: AppState,
-  domain: "sales" | "orders" | "fees" | "catalog" | "stock",
-  fillFrom: string | null,
-): Promise<void> {
-  if (domain === "sales" && fillFrom) {
-    state.cursors.salesSince = `${fillFrom}T00:00:00.000Z`;
-  } else if (domain === "orders" && fillFrom) {
-    state.cursors.ordersSince = `${fillFrom}T00:00:00.000Z`;
-  } else if (domain === "fees" && fillFrom) {
-    state.cursors.feesSince = `${fillFrom}T00:00:00.000Z`;
-  } else if (domain === "catalog") {
-    // 全量快照，不依赖 since
-    state.cursors.catalogSince = null;
-  } else if (domain === "stock") {
-    state.cursors.stockSince = null;
-  }
-  await pullDomain(state, domain);
-}
-
 /**
  * @param shopIds 指定店；`undefined` 时默认健康门禁店（前两家）；`"all"` 审计全部 live 店
  */
@@ -190,398 +128,270 @@ function auditEligibleShops(
   }));
 }
 
-async function backfillFeishu(actions: BackfillAction[]): Promise<void> {
-  const shops = listEligibleSyncShops();
-  try {
-    const cfg = loadFeishuDocsConfig({ requireCredentials: true });
-    const pull = await pullFeishuRaw(cfg, {
-      docIds: ["product", "packing", "accounts"],
-    });
-    const fail = pull.results.filter((r) => !r.ok).length;
-    const pullOk = fail === 0 && pull.results.some((r) => r.ok);
-    if (!pullOk) {
-      actions.push({
-        shopId: "*",
-        domain: "feishu",
-        ok: false,
-        message: `飞书 raw 失败 fail=${fail}`,
-        channel: "feishu",
-        detail: pull.results,
-      });
-      return;
-    }
-    const norm = normalizeFeishuRun({
-      rawRunId: pull.runId,
-      docIds: ["product", "packing", "accounts"],
-    });
-    const normFail = norm.results.filter((r) => !r.ok).length;
-    if (normFail > 0) {
-      actions.push({
-        shopId: "*",
-        domain: "feishu",
-        ok: false,
-        message: `飞书 normalize 失败 fail=${normFail}`,
-        channel: "feishu",
-        detail: norm.results,
-      });
-      return;
-    }
-    for (const shop of shops) {
-      await runAsShopAsync(shop.id, async () => {
-        const st = getShopState(shop.id);
-        const report = ingestFeishuLocalIntoState(st);
-        saveShopState(shop.id, st);
-        actions.push({
-          shopId: shop.id,
-          domain: "feishu",
-          ok: true,
-          message: `飞书入库 成本+${report.cost.upserted} 尺寸+${report.dims.upserted} 采购+${report.purchase.upserted}`,
-          channel: "feishu",
-          detail: { normalizeRunId: norm.runId },
-        });
-      });
-    }
+const DOMAIN_ZH: Record<string, string> = {
+  sales: "销量",
+  orders: "订单",
+  ads: "广告",
+  catalog: "商品目录",
+  stock: "库存",
+  fees: "平台费用",
+};
 
-    // 日报：能拉就拉；sheet 仍停在旧日期时写明口径
-    try {
-      const dailyPull = await pullFeishuRaw(cfg, { docIds: ["daily"] });
-      const dailyOk = dailyPull.results.some((r) => r.ok && r.docId === "daily");
-      if (dailyOk) {
-        normalizeDailyBriefRun({ rawRunId: dailyPull.runId });
-        for (const shop of shops) {
-          await runAsShopAsync(shop.id, async () => {
-            const st = getShopState(shop.id);
-            const ops = ingestFeishuOpsIntoState(st);
-            saveShopState(shop.id, st);
-            actions.push({
-              shopId: shop.id,
-              domain: "feishu",
-              ok: true,
-              message: `飞书日报运营 +${ops.upserted} · sheet=${ops.sheetTitle ?? "?"}`,
-              channel: "feishu-daily",
-              detail: { sheetTitle: ops.sheetTitle },
-            });
-          });
-        }
-      }
-    } catch (e) {
-      actions.push({
-        shopId: "*",
-        domain: "feishu",
-        ok: false,
-        message:
-          e instanceof Error
-            ? `飞书日报：${e.message}`
-            : `飞书日报：${String(e)}`,
-        channel: "feishu-daily",
-      });
-    }
-  } catch (e) {
-    const msg = isFeishuError(e)
-      ? formatFeishuError(e)
-      : e instanceof Error
-        ? e.message
-        : String(e);
-    actions.push({
-      shopId: "*",
-      domain: "feishu",
-      ok: false,
-      message: `飞书补拉失败：${msg}`,
-      channel: "feishu",
-    });
+/** 缺口仍在：告诉人去哪取、取什么时段（不自动开爬虫） */
+function guidanceForGap(shopId: string, gap: DomainGap): BackfillAction {
+  const range =
+    gap.fillFrom && gap.fillTo
+      ? `${gap.fillFrom}～${gap.fillTo}`
+      : gap.expectedEnd
+        ? `覆盖至 ${gap.expectedEnd}`
+        : "按页面期望截止日";
+  const zh = DOMAIN_ZH[gap.domain] ?? gap.domain;
+
+  let message: string;
+  let channel: string = gap.channel;
+  let domain: BackfillAction["domain"] = gap.domain;
+
+  switch (gap.domain) {
+    case "ads":
+      domain = "yingdao-ads";
+      channel = "guide-ads-pw";
+      message =
+        `还缺 ${zh}（${range}）。` +
+        `请到「爬虫工作台 → 广告导出」选店 ${shopId}，时间覆盖 ${range}（只要一天就把起止都设成同一天），导出完成后再回本页点一键补齐。`;
+      break;
+    case "sales":
+      channel = "guide-sales";
+      message =
+        `还缺 ${zh}（${range}）。` +
+        `请到「爬虫工作台 → 销量导出」导出覆盖 ${range}，或到「NOON 接入 / 汇总同步」拉销售；完成后再回本页点一键补齐。`;
+      break;
+    case "orders":
+      channel = "guide-impex";
+      message =
+        `还缺订单（${range}）。` +
+        `请到「NOON 接入」或「汇总同步」拉该店订单，覆盖 ${range}，完成后再点一键补齐。`;
+      break;
+    case "catalog":
+      channel = "guide-impex";
+      message =
+        `商品目录未更新到 ${gap.expectedEnd}。` +
+        `请到「NOON 接入」或「汇总同步」拉该店商品目录，完成后再点一键补齐。`;
+      break;
+    case "stock":
+      channel = "guide-impex";
+      message =
+        `库存未更新到 ${gap.expectedEnd}。` +
+        `请到「NOON 接入」或「汇总同步」拉该店库存，完成后再点一键补齐。`;
+      break;
+    case "fees":
+      channel = "guide-impex";
+      message =
+        `平台费用未更新到 ${gap.expectedEnd}。` +
+        `请到「NOON 接入」或「汇总同步」拉该店费用，完成后再点一键补齐。`;
+      break;
+    default:
+      message = `还缺 ${zh}（${range}）。请到对应功能取数后再点一键补齐。`;
   }
+
+  return {
+    shopId,
+    domain,
+    ok: false,
+    skipped: true,
+    message,
+    fillFrom: gap.fillFrom,
+    fillTo: gap.fillTo,
+    channel,
+  };
 }
 
-async function backfillAdsPw(
+/** 扫各店 portal-imports + 已落盘飞书，尝试入库补洞 */
+async function alignFromLocalTables(
   audits: ShopGapReport[],
   actions: BackfillAction[],
 ): Promise<void> {
-  const adsGaps = audits
-    .map((a) => ({
-      shopId: a.shopId,
-      gap: a.domains.find((d) => d.domain === "ads" && !d.ok),
-    }))
-    .filter((x): x is { shopId: string; gap: DomainGap } => Boolean(x.gap));
+  const shopIds = [...new Set(audits.map((a) => a.shopId))];
 
-  if (!adsGaps.length) return;
+  for (const shopId of shopIds) {
+    const before = audits.find((a) => a.shopId === shopId);
+    const needDomains = before ? domainsNeedingFill(before) : [];
+    if (!needDomains.length && before?.complete) continue;
 
-  // 先尝试扫已有 portal-imports（可能已落盘但未入库）
-  for (const { shopId, gap } of adsGaps) {
     await runAsShopAsync(shopId, async () => {
       const st = getShopState(shopId);
-      const latest = await ingestLatestAdsFile(st);
-      await runAutoIngest(st, { force: false });
-      saveShopState(shopId, st);
-      if (latest.ok && !latest.skipped) {
-        actions.push({
-          shopId,
-          domain: "yingdao-ads",
-          ok: true,
-          message: `已入库最新广告文件 ${latest.fileName}`,
-          fillFrom: gap.fillFrom,
-          fillTo: gap.fillTo,
-          channel: "portal-imports",
-        });
-      }
-    });
-  }
+      const needAds = needDomains.some((d) => d.domain === "ads");
+      const needSales = needDomains.some((d) => d.domain === "sales");
 
-  // 重审：仍缺则主动触发 Playwright（不写 pending、不 spawn 影刀）
-  const stillMissing = adsGaps.filter(({ shopId, gap }) => {
-    const report = auditShopGaps(
-      shopId,
-      shopId,
-      getShopState(shopId),
-      { expectedEnd: gap.expectedEnd },
-    );
-    return report.domains.some((d) => d.domain === "ads" && !d.ok);
-  });
-  if (!stillMissing.length) return;
-
-  const shopIds = stillMissing.map((x) => x.shopId);
-  const worst = stillMissing.reduce((a, b) =>
-    (a.gap.missingDates?.length ?? 0) >= (b.gap.missingDates?.length ?? 0)
-      ? a
-      : b,
-  );
-  const missingDays = Math.min(
-    30,
-    Math.max(1, worst.gap.missingDates?.length ?? 7),
-  );
-  // 多日缺口用 days；单日用 yesterday（与交接一致）
-  const range = missingDays > 1 ? ("days" as const) : ("yesterday" as const);
-  const days = missingDays;
-  const fillFrom = worst.gap.fillFrom;
-  const fillTo = worst.gap.fillTo;
-
-  // 广告 cookie 缺失/过期时不要硬开导出：会弹登录/OTP，且旧逻辑可能刷新冲掉验证码
-  const adsSession = getPwSessionStatus().sites.find((s) => s.site === "ads");
-  if (
-    adsSession &&
-    (adsSession.level === "missing" || adsSession.level === "expired")
-  ) {
-    actions.push({
-      shopId: shopIds.join(","),
-      domain: "yingdao-ads",
-      ok: false,
-      skipped: true,
-      message: `广告登录态不可用（${adsSession.message}）。请先到「Playwright 工作室 → 登录态 → 打开登录窗口（一次两边）」完成邮箱验证码；同窗会覆盖广告+卖家并复测，通过后再点一键补齐。缺口约 ${fillFrom}～${fillTo}`,
-      fillFrom,
-      fillTo,
-      channel: "ads-pw",
-      detail: adsSession,
-    });
-    for (const { shopId, gap } of stillMissing) {
-      const state = getShopState(shopId);
-      pushAlert(state, {
-        level: "warning",
-        title: "广告缺数：需先登录 Ad Manager",
-        detail: `店铺 ${shopId} 缺广告 ${gap.fillFrom}～${gap.fillTo}。请先完成 Playwright 广告后台登录，再补齐或手动导出。`,
+      const auto = await runAutoIngest(st, { force: false });
+      actions.push({
+        shopId,
+        domain: "catalog",
+        ok: true,
+        message: `检查已导出文件：共 ${auto.scanned} 个 · 新对齐 ${auto.imported} · 无需重复 ${auto.skipped}${
+          auto.failed.length ? ` · 失败 ${auto.failed.length}` : ""
+        }`,
+        channel: "portal-imports",
+        detail: {
+          imported: auto.details,
+          failed: auto.failed.slice(0, 8),
+        },
       });
-      saveShopState(shopId, state);
-    }
-    return;
+
+      if (needAds || !before?.complete) {
+        const ads = await ingestLatestAdsFile(st);
+        if (ads.ok && !ads.skipped) {
+          actions.push({
+            shopId,
+            domain: "yingdao-ads",
+            ok: true,
+            message: `已对齐广告导出 ${ads.reportFrom ?? "?"}～${ads.reportTo ?? "?"}（${ads.count ?? 0} 行）`,
+            fillFrom: ads.reportFrom,
+            fillTo: ads.reportTo,
+            channel: "portal-imports",
+          });
+        } else if (needAds) {
+          actions.push({
+            shopId,
+            domain: "yingdao-ads",
+            ok: true,
+            skipped: true,
+            message: "暂无可用的广告导出可对齐",
+            channel: "portal-imports",
+          });
+        }
+      }
+
+      if (needSales || !before?.complete) {
+        const sales = await ingestLatestSalesFile(st);
+        if (sales.ok && !sales.skipped) {
+          actions.push({
+            shopId,
+            domain: "sales",
+            ok: true,
+            message: `已对齐销量导出 ${sales.reportFrom ?? "?"}～${sales.reportTo ?? "?"}（${sales.count ?? 0} 行）`,
+            fillFrom: sales.reportFrom,
+            fillTo: sales.reportTo,
+            channel: "portal-imports",
+          });
+        } else if (needSales) {
+          actions.push({
+            shopId,
+            domain: "sales",
+            ok: true,
+            skipped: true,
+            message: "暂无可用的销量导出可对齐",
+            channel: "portal-imports",
+          });
+        }
+      }
+
+      saveShopState(shopId, st);
+    });
   }
 
-  try {
-    const st = startAdsPwExport({ shopIds, range, days });
-    const ok =
-      st.status === "running" || st.status === "starting" || st.status === "ok";
-    actions.push({
-      shopId: shopIds.join(","),
-      domain: "yingdao-ads",
-      ok,
-      message: ok
-        ? `已触发 Playwright 广告导出 · shops=${shopIds.join(",")} · ${st.message ?? ""} · 口径 ${range}${range === "days" ? `/${days}` : ""}（约 ${fillFrom}～${fillTo}）。若某店 Ad Manager 无权限会自动跳过并继续其它店`
-        : `Playwright 未能启动：${st.message ?? "unknown"}。请手动：cd apps/api/scripts/noon-pw-platform && python main.py ads ui；或把 ads_sku_*.csv 放入各店 portal-imports`,
-      fillFrom,
-      fillTo,
-      channel: "ads-pw",
-      detail: getAdsPwExportStatus(),
-    });
-    if (!ok) {
-      for (const { shopId, gap } of stillMissing) {
-        const state = getShopState(shopId);
-        pushAlert(state, {
-          level: "warning",
-          title: "广告缺数：Playwright 导出未触发成功",
-          detail: `店铺 ${shopId} 缺广告 ${gap.fillFrom}～${gap.fillTo}。请跑 python main.py ui 或把 ads_sku_*.csv 放入 portal-imports 后汇总同步。`,
-        });
-        saveShopState(shopId, state);
-      }
+  // 飞书：只吃本机已 normalize 的表，不远端 pull
+  for (const shop of listEligibleSyncShops()) {
+    if (shopIds.length && !shopIds.includes(shop.id)) continue;
+    try {
+      await runAsShopAsync(shop.id, async () => {
+        const st = getShopState(shop.id);
+        const report = ingestFeishuLocalIntoState(st);
+        const ops = ingestFeishuOpsIntoState(st);
+        saveShopState(shop.id, st);
+        const touched =
+          report.cost.upserted +
+            report.dims.upserted +
+            report.purchase.upserted +
+            ops.upserted >
+          0;
+        if (touched) {
+          actions.push({
+            shopId: shop.id,
+            domain: "feishu",
+            ok: true,
+            message: `已对齐飞书本地数据：成本+${report.cost.upserted} 尺寸+${report.dims.upserted} 采购+${report.purchase.upserted} 日报+${ops.upserted}`,
+            channel: "feishu-local",
+          });
+        }
+      });
+    } catch {
+      // 无飞书本地产物时静默跳过，不吓唬业务同事
     }
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    actions.push({
-      shopId: shopIds.join(","),
-      domain: "yingdao-ads",
-      ok: false,
-      message: `Playwright 广告导出异常：${msg}。需补链路：python main.py ads ui；口径 ${fillFrom}～${fillTo} 的 ads_sku 日报`,
-      fillFrom,
-      fillTo,
-      channel: "ads-pw",
-    });
+  }
+}
+
+function appendGuidanceForRemaining(
+  after: ShopGapReport[],
+  actions: BackfillAction[],
+): void {
+  for (const report of after) {
+    if (report.complete) continue;
+    for (const gap of domainsNeedingFill(report)) {
+      actions.push(guidanceForGap(report.shopId, gap));
+    }
   }
 }
 
 /**
- * 跑一轮补洞。并发调用排队。
+ * 跑一轮「扫表补齐」。并发调用排队。
+ * 不触发 Impex / Playwright / 飞书远端拉取。
  */
 export async function runDataBackfill(
   opts: DataBackfillOptions = {},
 ): Promise<DataBackfillResult> {
   const run = async (): Promise<DataBackfillResult> => {
     if (running) {
-      throw new Error("数据补洞正在进行中，请稍候");
+      throw new Error("数据补齐正在进行中，请稍候");
     }
     running = true;
     const triggeredBy = opts.triggeredBy ?? "manual";
     const startedAt = new Date().toISOString();
     const runId = `bf_${startedAt.replace(/[:.]/g, "-")}`;
     const actions: BackfillAction[] = [];
-    const maxPerShop = Math.max(1, opts.maxImpexPerShop ?? 2);
-    const maxTotal = Math.max(1, opts.maxImpexTotal ?? 4);
-    let impexTotal = 0;
 
     try {
       const audits = auditEligibleShops(opts.shopIds, opts.lookbackDays);
       const anyGap = audits.some((a) => !a.complete);
 
-      if (!opts.skipFeishu && anyGap) {
-        await backfillFeishu(actions);
-      } else if (opts.skipFeishu) {
-        actions.push({
-          shopId: "*",
-          domain: "feishu",
+      if (!anyGap) {
+        const finishedAt = new Date().toISOString();
+        const result: DataBackfillResult = {
           ok: true,
-          skipped: true,
-          message: "跳过飞书",
-          channel: "feishu",
-        });
-      }
-
-      if (!opts.skipYingdao) {
-        await backfillAdsPw(audits, actions);
-      } else {
-        actions.push({
-          shopId: "*",
-          domain: "yingdao-ads",
-          ok: true,
-          skipped: true,
-          message: "跳过广告 RPA（Playwright）",
-          channel: "yingdao-ads",
-        });
-      }
-
-      if (!opts.skipNoon) {
-        for (const report of audits) {
-          if (impexTotal >= maxTotal) break;
-          const state0 = getShopState(report.shopId);
-          // 空 Catalog 且无销售：跳过 Impex，避免抢配额（新店凭证未配齐时常见）
-          if (
-            (state0.catalog?.length ?? 0) === 0 &&
-            (state0.salesFacts?.length ?? 0) === 0
-          ) {
-            actions.push({
-              shopId: report.shopId,
-              domain: "catalog",
-              ok: false,
-              skipped: true,
-              message:
-                "跳过 Impex：Catalog/Sales 皆空（请先配凭证或手动拉 catalog，避免抢老店配额）",
-              channel: "noon-impex",
-            });
-            continue;
-          }
-          if (isImpexCoolingDown(report.shopId)) {
-            actions.push({
-              shopId: report.shopId,
+          runId,
+          triggeredBy,
+          startedAt,
+          finishedAt,
+          message: `各店数据已齐，无需补齐（已查 ${audits.length} 店）`,
+          audits,
+          actions: [
+            {
+              shopId: "*",
               domain: "sales",
-              ok: false,
+              ok: true,
               skipped: true,
-              message: "Impex 冷却中，本轮跳过 Noon 补拉",
-              channel: "noon-impex",
-            });
-            continue;
-          }
-
-          const need = domainsNeedingFill(report)
-            .filter((d) => isImpexDomain(d.domain))
-            .sort(
-              (a, b) =>
-                IMPEX_ORDER.indexOf(a.domain) - IMPEX_ORDER.indexOf(b.domain),
-            );
-
-          let perShop = 0;
-          for (const gap of need) {
-            if (perShop >= maxPerShop || impexTotal >= maxTotal) break;
-            if (!isImpexDomain(gap.domain)) continue;
-            if (isImpexCoolingDown(report.shopId)) {
-              actions.push({
-                shopId: report.shopId,
-                domain: gap.domain,
-                ok: false,
-                skipped: true,
-                message: "Impex 冷却，停止该店后续域",
-                fillFrom: gap.fillFrom,
-                fillTo: gap.fillTo,
-                channel: "noon-impex",
-              });
-              break;
-            }
-
-            try {
-              await runAsShopAsync(report.shopId, async () => {
-                const st = getShopState(report.shopId);
-                await pullDomainCoveringGap(
-                  st,
-                  gap.domain,
-                  gap.fillFrom,
-                );
-                saveShopState(report.shopId, st);
-              });
-              perShop += 1;
-              impexTotal += 1;
-              actions.push({
-                shopId: report.shopId,
-                domain: gap.domain,
-                ok: true,
-                message: `Impex ${gap.domain} 一次覆盖 ${gap.fillFrom}～${gap.fillTo}（解析按日归类入库）`,
-                fillFrom: gap.fillFrom,
-                fillTo: gap.fillTo,
-                channel: "noon-impex",
-              });
-            } catch (e) {
-              const msg = e instanceof Error ? e.message : String(e);
-              actions.push({
-                shopId: report.shopId,
-                domain: gap.domain,
-                ok: false,
-                message: `Impex ${gap.domain} 失败：${msg}`,
-                fillFrom: gap.fillFrom,
-                fillTo: gap.fillTo,
-                channel: "noon-impex",
-              });
-              if (isImpexLimitMessage(msg)) break;
-            }
-          }
-        }
-      } else {
-        actions.push({
-          shopId: "*",
-          domain: "sales",
-          ok: true,
-          skipped: true,
-          message: "跳过 Noon",
-          channel: "noon-impex",
-        });
+              message: "无缺口",
+              channel: "none",
+            },
+          ],
+        };
+        persistLast(result);
+        console.log(`[data-backfill] ${result.message}`);
+        return result;
       }
 
+      await alignFromLocalTables(audits, actions);
       clearCatalogAssembleCache();
 
-      // 补完再审计摘要
       const after = auditEligibleShops(opts.shopIds, opts.lookbackDays);
+      appendGuidanceForRemaining(after, actions);
+
       const still = after.filter((a) => !a.complete);
+      const filledHints = actions.filter(
+        (a) => a.ok && !a.skipped && a.channel === "portal-imports",
+      ).length;
+      const guides = actions.filter((a) =>
+        String(a.channel || "").startsWith("guide-"),
+      ).length;
       const finishedAt = new Date().toISOString();
       const result: DataBackfillResult = {
         ok: still.length === 0,
@@ -591,8 +401,8 @@ export async function runDataBackfill(
         finishedAt,
         message:
           still.length === 0
-            ? `补洞完成 · 审计店 ${after.length} 齐全`
-            : `补洞部分完成 · 仍有 ${still.length} 店缺口（Impex 已用 ${impexTotal}/${maxTotal}；可稍后重跑）`,
+            ? `对齐完成 · ${after.length} 店数据已齐`
+            : `对齐结束 · 仍有 ${still.length} 店缺口（${guides} 条取数提示）。请按明细说明取数后再点一键补齐。`,
         audits: after,
         actions,
       };
@@ -626,10 +436,21 @@ export async function runDataBackfill(
   return next;
 }
 
+/** 审计全部 live Impex 店（数据对齐页用） */
+export function auditAllShopGaps(lookbackDays?: number): ShopGapReport[] {
+  return auditEligibleShops("all", lookbackDays);
+}
+
+/** 仅门禁店齐全才算总览成功 */
+export function healthGateComplete(audits: ShopGapReport[]): boolean {
+  const gated = audits.filter((a) => a.countsTowardHealth);
+  if (!gated.length) return audits.every((a) => a.complete);
+  return gated.every((a) => a.complete);
+}
+
 /**
- * 启动后延迟检查；有缺口才跑补洞。
+ * 启动后延迟扫表补齐（不拉远程）。
  * OUTPOST_DATA_BACKFILL_ON_BOOT=0 关闭；默认开。
- * OUTPOST_DATA_BACKFILL_BOOT_DELAY_MS 默认 45s（避撞其它 boot 任务）
  */
 export function scheduleBootDataBackfill(): void {
   const raw = process.env.OUTPOST_DATA_BACKFILL_ON_BOOT?.trim();
@@ -647,14 +468,13 @@ export function scheduleBootDataBackfill(): void {
   );
   const t = setTimeout(() => {
     try {
-      const audits = auditEligibleShops(undefined);
-      const need = audits.filter((a) => !a.complete);
+      const need = auditEligibleShops(undefined).filter((a) => !a.complete);
       if (!need.length) {
         console.log("[data-backfill] boot: all shops complete, skip");
         return;
       }
       console.log(
-        `[data-backfill] boot: ${need.length} shop(s) incomplete → start`,
+        `[data-backfill] boot: ${need.length} shop(s) incomplete → scan local`,
       );
       void runDataBackfill({ triggeredBy: "boot" }).catch((err) => {
         console.error("[data-backfill] boot failed", err);
@@ -665,15 +485,4 @@ export function scheduleBootDataBackfill(): void {
   }, delay);
   if (typeof t.unref === "function") t.unref();
   console.log(`[data-backfill] boot check in ${delay}ms`);
-}
-
-/** 数据对齐页：审计全部 live 店；总览成败只看 countsTowardHealth */
-export function auditAllShopGaps(lookbackDays?: number): ShopGapReport[] {
-  return auditEligibleShops("all", lookbackDays);
-}
-
-export function healthGateComplete(audits: ShopGapReport[]): boolean {
-  const gated = audits.filter((a) => a.countsTowardHealth);
-  if (!gated.length) return audits.every((a) => a.complete);
-  return gated.every((a) => a.complete);
 }

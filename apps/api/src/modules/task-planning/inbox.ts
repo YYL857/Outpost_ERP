@@ -1,6 +1,6 @@
 import type { AuthUser } from "../../auth/types.js";
 import type { TaskInboxItem, TaskRecord } from "./types.js";
-import { listTasksForUser, markRejectSeen } from "./store.js";
+import { listTasksForUser, markRejectSeen, markReviewSeen } from "./store.js";
 
 export function buildInbox(user: AuthUser): TaskInboxItem[] {
   const tasks = listTasksForUser(user);
@@ -22,7 +22,11 @@ export function buildInbox(user: AuthUser): TaskInboxItem[] {
       });
     }
 
-    if (t.createdBy.id === user.id && t.status === "submitted") {
+    if (
+      t.createdBy.id === user.id &&
+      t.status === "submitted" &&
+      !t.reviewNotifiedAt
+    ) {
       items.push({
         id: `inbox-review-${t.id}`,
         taskId: t.id,
@@ -59,4 +63,10 @@ export function dismissRejectInbox(task: TaskRecord, user: AuthUser) {
   if (task.assignee.id !== user.id) return task;
   if (task.status !== "rejected" || task.rejectNotifiedAt) return task;
   return markRejectSeen(task);
+}
+
+export function dismissReviewInbox(task: TaskRecord, user: AuthUser) {
+  if (task.createdBy.id !== user.id) return task;
+  if (task.status !== "submitted" || task.reviewNotifiedAt) return task;
+  return markReviewSeen(task);
 }

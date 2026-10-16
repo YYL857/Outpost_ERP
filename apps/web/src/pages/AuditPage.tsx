@@ -90,7 +90,7 @@ export function AuditPage() {
     <div>
       <h1 className="page-title">操作审计</h1>
       <p className="page-desc">
-        追溯已登录用户的增删改（含账目记账）。仅超管可看；按上海时区日期分文件。
+        追溯增删改：登录用户的业务写操作会自动落盘；补货标记、发货计划、广告预算、切店、采购记账等带人话摘要。约仓扩展免登录写入也会记（操作者显示为「约仓扩展」）。仅超管可看；按上海时区日期分文件。
       </p>
 
       <div className="card" style={{ marginBottom: 16 }}>

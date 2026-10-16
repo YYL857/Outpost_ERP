@@ -54,9 +54,9 @@ export function buildPromoPromptPack(opts: {
   const { draft, brief, outDirAbs, reviseNote, frameIndexes } = opts;
   const lock = brief.skuLock;
   const skuLine = [
-    lock.colorOnly ? `颜色 ONLY: ${lock.colorOnly}` : null,
+    lock.colorOnly ? `颜色（锁定）: ${lock.colorOnly}` : null,
     lock.forbidColors ? `禁止颜色: ${lock.forbidColors}` : null,
-    lock.specOnly ? `规格 ONLY: ${lock.specOnly}` : null,
+    lock.specOnly ? `规格（锁定）: ${lock.specOnly}` : null,
     lock.forbidSpecs ? `禁止规格: ${lock.forbidSpecs}` : null,
     lock.sizeFit ? `尺码/适配: ${lock.sizeFit}` : null,
     lock.effectNumber ? `效果数字: ${lock.effectNumber}` : null,
@@ -118,8 +118,9 @@ ${framesTableMarkdown()}
 ${PROMO_NEGATIVE_CONSTRAINTS}
 
 ## REFERENCE IMAGES
-Reference product photos are attached to this message and/or live under the listing draft images folder.
-Match product appearance exactly (color, structure, materials).
+Reference product photos live in this workspace under \`refs/\` (same folder as this prompt.md).
+Open and inspect those files; match product appearance exactly (color, structure, materials).
+Do not invent alternate colors or specs beyond the SKU lock.
 
 ${reviseBlock}
 

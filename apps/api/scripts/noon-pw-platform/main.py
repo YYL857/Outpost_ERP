@@ -3,11 +3,13 @@
 Noon Playwright 爬虫平台：python main.py <job> [ui|login|probe]
 
 job:
-  ads        Ad Manager 广告导出（转调 noon-ads-export-pw）
-  sales      Seller Lab 销量导出 → portal-imports/sales_export_*.csv
-  keepalive  login=统一登录；ui=软探测；otp-probe=清 cookie 测邮箱 OTP 自动回填
+  ads         Ad Manager 广告导出（转调 noon-ads-export-pw）
+  sales       Seller Lab 销量导出 → portal-imports/sales_export_*.csv
+  keepalive   login=统一登录（含邮箱 OTP 自动回填）；ui=软探测
+  ads-budget  峰期/低峰改 Live 预算（试店白名单，默认 PRJ488078）
 
-落盘一律经 outpost_bridge 进各店 portal-imports。
+落盘：ads/sales 经 outpost_bridge 进各店 portal-imports；
+ads-budget 写 shops/{shopId}/ads-budget/baseline.csv（不入库 adsFacts）。
 市场情报 / 耗材（买家商城前台）仍走影刀，不在此平台。
 """
 from __future__ import annotations
@@ -16,7 +18,7 @@ import os
 import sys
 from pathlib import Path
 
-JOBS = ("ads", "sales", "keepalive")
+JOBS = ("ads", "sales", "keepalive", "ads-budget", "ads_budget")
 HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
@@ -63,7 +65,7 @@ def main(argv: list[str] | None = None) -> int:
     job = args[0].strip().lower()
     cmd = (args[1] if len(args) > 1 else "ui").strip().lower()
     if job not in JOBS:
-        print(f"未知 job {job}；可选 {', '.join(JOBS)}", flush=True)
+        print(f"未知 job {job}；可选 ads, sales, keepalive, ads-budget", flush=True)
         return 2
     if job == "ads":
         from jobs.ads import run
@@ -77,6 +79,11 @@ def main(argv: list[str] | None = None) -> int:
         from jobs.keepalive import main as ka_main
 
         return ka_main(cmd)
+    if job in ("ads-budget", "ads_budget"):
+        from jobs.ads_budget import main as budget_main
+
+        # 其余参数：sync --refresh-baseline / apply --mode peak --dry-run
+        return budget_main(args[1:])
     return 2
 
 

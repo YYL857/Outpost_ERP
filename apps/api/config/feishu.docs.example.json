@@ -55,15 +55,6 @@
       "wikiToken": "R44ZwRT8oiXYvokEgIJcYUm3nQb",
       "targetDomain": "raw_only",
       "enabled": true
-    },
-    {
-      "id": "info-check",
-      "label": "信息检查表",
-      "kind": "wiki",
-      "url": "https://ecnpehzqqtsp.feishu.cn/wiki/UFZvwSeSui4FoIkxs7Oc4DMynyz",
-      "wikiToken": "UFZvwSeSui4FoIkxs7Oc4DMynyz",
-      "targetDomain": "raw_only",
-      "enabled": true
     }
   ]
 }

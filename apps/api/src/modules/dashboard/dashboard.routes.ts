@@ -1,5 +1,5 @@
 import { Router } from "express";
-import type { AppState, SalesFact } from "../../common/types.js";
+import type { AdsFact, AppState, SalesFact } from "../../common/types.js";
 import {
   buildCatalogDisplayMap,
   catalogDisplayOf,
@@ -10,6 +10,11 @@ import {
   loadLatestPackingLines,
   summarizePackingInTransit,
 } from "../../platforms/feishu/normalize/packing-lines.js";
+import {
+  isCatalogStockHintWarehouse,
+  stockLastImpexAt,
+} from "../sync/live-impex-domains.js";
+import { shanghaiHour } from "../sync/gap-audit.js";
 
 function round2(n: number) {
   return Math.round(n * 100) / 100;
@@ -35,6 +40,26 @@ function addDays(ymd: string, delta: number): string {
   const dt = new Date(Date.UTC(y!, m! - 1, d!));
   dt.setUTCDate(dt.getUTCDate() + delta);
   return dt.toISOString().slice(0, 10);
+}
+
+/** 最新单日广告事实（from=to），且日期 ≤ onOrBefore */
+function latestExactDayAds(
+  facts: AdsFact[],
+  onOrBefore: string,
+): { day: string; facts: AdsFact[] } | null {
+  const byDay = new Map<string, AdsFact[]>();
+  for (const f of facts) {
+    if (f.fromDate !== f.toDate || f.fromDate > onOrBefore) continue;
+    const arr = byDay.get(f.fromDate) ?? [];
+    arr.push(f);
+    byDay.set(f.fromDate, arr);
+  }
+  let best: string | null = null;
+  for (const day of byDay.keys()) {
+    if (!best || day > best) best = day;
+  }
+  if (!best) return null;
+  return { day: best, facts: byDay.get(best)! };
 }
 
 function rollupSales(facts: SalesFact[]) {
@@ -74,6 +99,34 @@ function isDealOrderStatus(status: string): boolean {
   const s = status.trim().toLowerCase();
   if (!s) return true;
   return !/cancel|void|fail|reject|refunded|returned/.test(s);
+}
+
+/**
+ * Noon Active Net 按 SKU：优先 Catalog.stockFbnNet，否则分仓 FBN ledger（排除假仓）。
+ */
+function rollupActiveNetBySku(state: AppState): Map<string, number> {
+  const map = new Map<string, number>();
+  const fromCatalog = new Set<string>();
+  for (const item of state.catalog ?? []) {
+    const sku = (item.partnerSku || "").trim();
+    if (!sku) continue;
+    if (item.stockFbnNet != null && Number.isFinite(item.stockFbnNet)) {
+      map.set(sku, Math.max(0, Math.floor(Number(item.stockFbnNet))));
+      fromCatalog.add(sku);
+    }
+  }
+  const fbnLedger = new Map<string, number>();
+  for (const s of state.stock ?? []) {
+    const sku = (s.partnerSku || "").trim();
+    if (!sku || fromCatalog.has(sku)) continue;
+    if (isCatalogStockHintWarehouse(s.warehouseCode)) continue;
+    if (s.fulfillment !== "fbn") continue;
+    fbnLedger.set(sku, (fbnLedger.get(sku) ?? 0) + (s.qty || 0));
+  }
+  for (const [sku, qty] of fbnLedger) {
+    if (!map.has(sku)) map.set(sku, qty);
+  }
+  return map;
 }
 
 function rollupDealOrdersByDate(
@@ -148,28 +201,63 @@ export function createDashboardRouter(getState: () => AppState) {
     const yesterdayOrderCount = dealOrdersByDate.get(yesterday) ?? 0;
     const dayBeforeOrderCount = dealOrdersByDate.get(dayBeforeYesterday) ?? 0;
 
-    /** 广告卡：优先单日事实 from=to=昨天；无单日则回退「区间覆盖昨天」 */
+    /**
+     * 广告卡：优先昨天单日 → 区间覆盖昨天 → 最新可用单日（日更约 17:00，白天常无昨日）。
+     * 自然单/自然 GMV 只扣「昨天」广告，不把回退日的广告混进昨日自然口径。
+     */
     let adsSpend = 0;
     let adsRevenue = 0;
     let adsOrders = 0;
     let adsYesterdayFactCount = 0;
-    let adsScope: "exact-day" | "covering" | "none" = "none";
-    const exactDayFacts = (state.adsFacts ?? []).filter(
+    let adsScope: "exact-day" | "covering" | "latest-day" | "none" = "none";
+    let adsShowDate = yesterday;
+    let adsReportFrom: string | null = null;
+    let adsReportTo: string | null = null;
+    const allAdsFacts = state.adsFacts ?? [];
+    const exactDayFacts = allAdsFacts.filter(
       (f) => f.fromDate === yesterday && f.toDate === yesterday,
     );
-    const coveringFacts =
+    const coveringYesterdayFacts =
       exactDayFacts.length > 0
         ? exactDayFacts
-        : (state.adsFacts ?? []).filter(
+        : allAdsFacts.filter(
             (f) => f.fromDate <= yesterday && f.toDate >= yesterday,
           );
-    if (exactDayFacts.length > 0) adsScope = "exact-day";
-    else if (coveringFacts.length > 0) adsScope = "covering";
-    for (const f of coveringFacts) {
+    let cardFacts: AdsFact[] = [];
+    if (exactDayFacts.length > 0) {
+      adsScope = "exact-day";
+      cardFacts = exactDayFacts;
+      adsShowDate = yesterday;
+      adsReportFrom = yesterday;
+      adsReportTo = yesterday;
+    } else if (coveringYesterdayFacts.length > 0) {
+      adsScope = "covering";
+      cardFacts = coveringYesterdayFacts;
+      adsShowDate = yesterday;
+      adsReportFrom = yesterday;
+      adsReportTo = yesterday;
+    } else {
+      const latest = latestExactDayAds(allAdsFacts, yesterday);
+      if (latest) {
+        adsScope = "latest-day";
+        cardFacts = latest.facts;
+        adsShowDate = latest.day;
+        adsReportFrom = latest.day;
+        adsReportTo = latest.day;
+      }
+    }
+    for (const f of cardFacts) {
       adsSpend += f.spend;
       adsRevenue += f.revenue;
       adsOrders += f.orders;
       adsYesterdayFactCount += 1;
+    }
+    /** 昨日广告（仅用于自然口径；无昨日时为 0） */
+    let ydayAdsRevenue = 0;
+    let ydayAdsOrders = 0;
+    if (adsScope === "exact-day" || adsScope === "covering") {
+      ydayAdsRevenue = adsRevenue;
+      ydayAdsOrders = adsOrders;
     }
     const adsRoas = adsSpend > 0 ? round2(adsRevenue / adsSpend) : null;
     const ydaySales = sales.byDate[yesterday] ?? { units: 0, amount: 0 };
@@ -177,6 +265,7 @@ export function createDashboardRouter(getState: () => AppState) {
       units: 0,
       amount: 0,
     };
+    const adsCardSales = sales.byDate[adsShowDate] ?? { units: 0, amount: 0 };
 
     /**
      * 自然 GMV = 总 GMV − 广告归因收入。
@@ -189,28 +278,29 @@ export function createDashboardRouter(getState: () => AppState) {
     const totalGmvRow =
       totalGmvDate === yesterday ? ydaySales : (sales.byDate[totalGmvDate] ?? ydaySales);
     const totalGmvAmount = round2(totalGmvRow.amount);
+    const adsContributionBase =
+      adsScope === "latest-day" ? adsCardSales.amount : totalGmvAmount;
     const adsContribution =
-      totalGmvAmount > 0
-        ? round2((adsRevenue / totalGmvAmount) * 100)
+      adsContributionBase > 0
+        ? round2((adsRevenue / adsContributionBase) * 100)
         : null;
 
-    /** 自然单：昨日成交单 − 昨日广告归因单；自然 GMV：总 GMV − 广告归因收入 */
-    const organicOrderCount = Math.max(0, yesterdayOrderCount - Math.round(adsOrders));
-    const organicGmv = Math.max(0, round2(totalGmvAmount - adsRevenue));
+    /** 自然单：昨日成交单 − 昨日广告归因单；自然 GMV：总 GMV − 昨日广告归因收入 */
+    const organicOrderCount = Math.max(
+      0,
+      yesterdayOrderCount - Math.round(ydayAdsOrders),
+    );
+    const organicGmv = Math.max(0, round2(totalGmvAmount - ydayAdsRevenue));
 
+    /** 对齐 Noon Active Net：优先 Catalog stockFbnNet，否则分仓 FBN */
+    const activeNetBySku = rollupActiveNetBySku(state);
     let onHand = 0;
-    const qtyBySku = new Map<string, number>();
-    for (const s of state.stock ?? []) {
-      const qty = s.qty || 0;
-      onHand += qty;
-      if (!s.partnerSku) continue;
-      qtyBySku.set(s.partnerSku, (qtyBySku.get(s.partnerSku) ?? 0) + qty);
-    }
-    /** 有实际在库数量的 SKU（qty 合计 > 0），非「有 stock 行」 */
     let stockSkuCount = 0;
-    for (const qty of qtyBySku.values()) {
+    for (const qty of activeNetBySku.values()) {
+      onHand += qty;
       if (qty > 0) stockSkuCount += 1;
     }
+    const stockSyncedAt = stockLastImpexAt(state);
 
     /** 在途：装箱明细「送仓时间」为空，按当前店 N 前缀过滤 */
     const storePrefixes = inferStorePrefixes(state.catalog ?? []);
@@ -255,6 +345,15 @@ export function createDashboardRouter(getState: () => AppState) {
     }
 
     const caveats: string[] = [];
+    if (shanghaiHour() < 14) {
+      caveats.push(
+        "日历昨日销售/订单以当天下午同步后为准（Noon 官方出数滞后，非本地漏导）。",
+      );
+    } else {
+      caveats.push(
+        "日历昨日销售/订单：Noon 官方通常下午出全；若仍偏低请再补拉 sales/orders。",
+      );
+    }
     if (sales.amount > 0 && orderGmv === 0 && state.orders.length > 0) {
       caveats.push(
         "履约订单 totalAmount 全为 0：看板营收以 salesFacts（销售报表）为准，不用 orders 金额。",
@@ -268,9 +367,13 @@ export function createDashboardRouter(getState: () => AppState) {
     }
     if (!(state.adsFacts ?? []).length) {
       caveats.push("广告报表未导入：广告卡为空。");
+    } else if (adsScope === "latest-day") {
+      caveats.push(
+        `昨日（${yesterday}）广告尚未入库（日更约 17:00）：广告卡暂展示最新可用日 ${adsShowDate}；自然单暂不扣广告。`,
+      );
     } else if (adsScope === "none") {
       caveats.push(
-        `昨日（${yesterday}）无广告事实：请确认影刀昨日导出已入库。`,
+        `昨日（${yesterday}）无广告事实：请确认广告日更导出已入库。`,
       );
     } else if (adsScope === "covering") {
       caveats.push(
@@ -283,9 +386,9 @@ export function createDashboardRouter(getState: () => AppState) {
         `昨日（${yesterday}）销售报表有 ${ydaySalesUnits} 件，但成交订单为 0：请检查订单同步是否覆盖该日。`,
       );
     }
-    if (adsOrders > yesterdayOrderCount && yesterdayOrderCount > 0) {
+    if (ydayAdsOrders > yesterdayOrderCount && yesterdayOrderCount > 0) {
       caveats.push(
-        `昨日广告归因订单（${adsOrders}）大于成交订单（${yesterdayOrderCount}）：自然单已夹为 0；广告订单与履约单口径不同。`,
+        `昨日广告归因订单（${ydayAdsOrders}）大于成交订单（${yesterdayOrderCount}）：自然单已夹为 0；广告订单与履约单口径不同。`,
       );
     }
     if (gmvFallback && totalGmvAmount > 0) {
@@ -330,24 +433,31 @@ export function createDashboardRouter(getState: () => AppState) {
           },
           {
             id: "ads",
-            label: "昨日广告归因",
+            label: "广告归因",
             source: "adsFacts",
             grain: "活动×SKU×日",
-            note: "优先 from=to=昨天单日；否则区间覆盖昨天。投产比=归因收入/花费",
+            note: "优先昨天单日 → 区间覆盖昨天 → 最新可用单日（广告日更约 17:00）。投产比=归因收入/花费",
           },
           {
             id: "organic",
             label: "自然订单 / 自然 GMV",
             source: "orders − ads.orders；salesFacts − ads.revenue",
             grain: "昨日",
-            note: "自然GMV=总GMV−广告归因收入；总GMV优先昨日销售报表，缺失则回退最新销售日",
+            note: "仅扣日历昨日广告；昨日广告未入库时自然口径暂不扣广告。总GMV优先昨日销售报表，缺失则回退最新销售日",
           },
           {
             id: "stockSku",
             label: "有库存 SKU",
-            source: "stock",
+            source: "catalog.stockFbnNet || stock(fbn)",
             grain: "partnerSku",
-            note: "各仓 qty 合计 > 0 的 SKU 数；来自最近一次库存同步快照",
+            note: "对齐 Noon Active Net：优先 Catalog stock_fbn_net，无则分仓 FBN；Active Net>0 的 SKU 数",
+          },
+          {
+            id: "onHand",
+            label: "在库件数",
+            source: "catalog.stockFbnNet || stock(fbn)",
+            grain: "partnerSku",
+            note: "对齐 Noon Active Net 合计；库存日更上海 09:30 / 16:00",
           },
           {
             id: "inTransit",
@@ -384,22 +494,27 @@ export function createDashboardRouter(getState: () => AppState) {
           series,
         },
         ads: {
-          date: yesterday,
+          /** 卡片展示日（昨日或最新可用日） */
+          date: adsScope === "none" ? yesterday : adsShowDate,
+          /** 口径目标日：上海日历昨天 */
+          requestedDate: yesterday,
           scope: adsScope,
           spend: round2(adsSpend),
           revenue: round2(adsRevenue),
           orders: Math.round(adsOrders),
           roas: adsRoas,
           contributionPct: adsContribution,
-          reportFrom: adsScope === "none" ? null : yesterday,
-          reportTo: adsScope === "none" ? null : yesterday,
+          reportFrom: adsReportFrom,
+          reportTo: adsReportTo,
           factCount: adsYesterdayFactCount,
-          allFactCount: (state.adsFacts ?? []).length,
+          allFactCount: allAdsFacts.length,
         },
         catalog: {
           stockSkuCount,
           salesSkuCount: sales.bySku.size,
           onHandQty: onHand,
+          stockSyncedAt,
+          stockMetric: "activeNet",
           inTransitQty: inTransit,
           inTransitSkuCount: packingTransit.skuCount,
           inTransitBoxCount: packingTransit.boxCount,
@@ -443,8 +558,8 @@ export function createDashboardRouter(getState: () => AppState) {
             totalGmv: totalGmvAmount,
             totalGmvDate,
             gmvFallback: Boolean(gmvFallback && totalGmvDate !== yesterday),
-            adOrders: Math.round(adsOrders),
-            adGmv: round2(adsRevenue),
+            adOrders: Math.round(ydayAdsOrders),
+            adGmv: round2(ydayAdsRevenue),
           },
         },
         fees: {

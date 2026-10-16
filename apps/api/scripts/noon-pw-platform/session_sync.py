@@ -4,7 +4,7 @@ Noon 伙伴后台：一次登录复用。
 
 策略（偏稳，不赌「只拷 cookie」）：
 1. 同一个有头 Chrome（挂在广告 profile）里先开 Ad Manager，等你完成 OTP
-   （OUTPOST_NOON_OTP_AUTO=1 时自动填邮箱 + IMAP 取验证码回填）
+   （默认自动填邮箱 + IMAP 取验证码；OUTPOST_NOON_OTP_AUTO=0 才关）
 2. 同窗再开 Seller/Reports，吃同一套 SSO（多数情况不用再收验证码；若仍停在登录页继续等）
 3. 两个站都确认已离开鉴权页后，把当前 context 的 storage_state 双写到
    noon-ads-pw 与 noon-seller-pw
@@ -16,6 +16,7 @@ Noon 伙伴后台：一次登录复用。
 from __future__ import annotations
 
 import json
+import os
 import time
 from datetime import datetime
 from pathlib import Path
@@ -33,9 +34,14 @@ from runtime import (
 LOGIN_WAIT_SEC = 900
 PING_TIMEOUT_MS = 60_000
 
+# 统一登录过程行缓冲，最终与 JSON 一并写入 pw_unified_login_*.log
+_UNIFIED_TRANSCRIPT: list[str] = []
+
 
 def log(msg: str) -> None:
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
+    line = f"[{datetime.now().strftime('%H:%M:%S')}] {msg}"
+    print(line, flush=True)
+    _UNIFIED_TRANSCRIPT.append(line)
 
 
 def is_auth_gate(url: str = "", snip: str = "", title: str = "") -> bool:
@@ -65,8 +71,55 @@ def is_auth_gate(url: str = "", snip: str = "", title: str = "") -> bool:
         "one-time password",
         "otp sent",
         "验证码",
+        # Welcome Back 选账号（无邮箱输入框）
+        "welcome back",
+        "continue with this user",
+        "use a different account",
     )
     return any(x in s for x in text_hits)
+
+
+def looks_like_auth_fail(text: str) -> bool:
+    """导出/探测日志里是否像登录墙（cookie 过期、OTP、无 storage_state）。"""
+    t = (text or "").lower()
+    keys = (
+        "会话已过期",
+        "停在登录",
+        "登录/otp",
+        "疑似未登录",
+        "无 seller lab cookie",
+        "无 ad manager cookie",
+        "无 storage_state",
+        "请先 python main.py",
+        "请先到 playwright",
+        "login.noon.partners",
+        "落在登录",
+        "accounts.google.com",
+        "authfail",
+        "sso cookie",
+        "live 抓取 0",
+    )
+    return any(k in t for k in keys)
+
+
+def try_recover_session_for_export(reason: str) -> bool:
+    """
+    广告/销量导出撞登录墙：整进程只跑一次统一登录（IMAP OTP 双写 cookie）。
+    无人值守已关（OTP_AUTO=0）或本轮已试过则不再发码。
+    """
+    if os.environ.get("OUTPOST_NOON_EXPORT_LOGIN_TRIED") == "1":
+        log("[export-auth] 本轮已尝试过自动登录，不再重复发码")
+        return False
+    if not otp_auto_enabled():
+        log("[export-auth] OUTPOST_NOON_OTP_AUTO=0，导出侧不自动重登")
+        return False
+    os.environ["OUTPOST_NOON_EXPORT_LOGIN_TRIED"] = "1"
+    snippet = (reason or "").replace("\n", " ")[:200]
+    log(f"[export-auth] 导出撞登录墙，开始统一登录兜底: {snippet}")
+    code = run_unified_login()
+    ok = code == 0
+    log("[export-auth] 统一登录 OK，将重试本轮导出" if ok else "[export-auth] 统一登录失败，不再重试导出")
+    return ok
 
 
 def _ads_ready(url: str) -> bool:
@@ -173,6 +226,8 @@ async def wait_left_auth(
     last_url = ""
     otp_attempted = False
     otp_error: str | None = None
+    autofill_tries = 0
+    max_autofill_tries = 3  # 含 Welcome Back 点不中时的有限重试
     while time.time() < deadline:
         try:
             url = page.url or ""
@@ -186,23 +241,32 @@ async def wait_left_auth(
         if ready_fn(url):
             await page.wait_for_timeout(1500)
             return {"ok": True, "url": page.url}
-        # 仍停在鉴权页：自动邮箱 OTP（每 label 只完整尝试一次）
-        if (
-            allow_otp_auto
-            and otp_auto_enabled()
-            and not otp_attempted
-            and is_auth_gate(url)
-        ):
+        # 仍停在鉴权页：自动登录（有限次；Welcome Back 失败可再试）
+        can_retry_welcome = bool(
+            otp_error
+            and "Welcome Back" in otp_error
+            and autofill_tries < max_autofill_tries
+        )
+        can_try = (not otp_attempted) or can_retry_welcome
+        if allow_otp_auto and otp_auto_enabled() and can_try and is_auth_gate(url):
+            autofill_tries += 1
             result = await try_autofill_noon_login(
-                page, log=log, already_attempted=otp_attempted
+                page, log=log, already_attempted=False
             )
             if result.get("attempted") or result.get("ok"):
                 otp_attempted = True
-            if result.get("error"):
+            if result.get("ok"):
+                otp_error = None  # 成功后清掉旧 Welcome Back 错误，避免误重试
+                log(f"[wait:{label}] 自动 OTP 已提交，继续等待离开鉴权页")
+            elif result.get("error"):
                 otp_error = str(result["error"])
                 log(f"[wait:{label}] 自动 OTP: {otp_error}")
-            elif result.get("ok"):
-                log(f"[wait:{label}] 自动 OTP 已提交，继续等待离开鉴权页")
+                if result.get("retryable") and "Welcome Back" in otp_error:
+                    otp_attempted = False
+                    log(
+                        f"[wait:{label}] Welcome Back 可重试 "
+                        f"({autofill_tries}/{max_autofill_tries})"
+                    )
             await page.wait_for_timeout(2000)
             continue
         await page.wait_for_timeout(3000)
@@ -319,11 +383,14 @@ async def _unified_login_async() -> dict:
     async def run(context, page):
         if otp_auto_enabled():
             log(
-                "[unified] ① 打开 Ad Manager — OUTPOST_NOON_OTP_AUTO=1，"
-                "将自动填邮箱并从 IMAP 取验证码（有头窗仍会弹出）"
+                "[unified] ① 打开 Ad Manager — 无人值守：自动填邮箱 + IMAP 取验证码"
+                "（有头窗会弹出，勿人手填）"
             )
         else:
-            log("[unified] ① 打开 Ad Manager — 请在此窗完成邮箱验证码（只这一次）")
+            log(
+                "[unified] ① 打开 Ad Manager — OUTPOST_NOON_OTP_AUTO=0，"
+                "已关无人值守（不推荐）"
+            )
         await goto_once(page, ADS_HOME)
         ads_wait = await wait_left_auth(
             page, ready_fn=_ads_ready, label="ads", timeout_sec=LOGIN_WAIT_SEC
@@ -392,22 +459,35 @@ async def _unified_login_async() -> dict:
             **headed,
         }
 
-    log("[unified] ④ 落盘后无头探测（网络抖动会重试；鉴权失败才真失败）")
-    ads_ping = await ping_site(ADS_PROFILE, ADS_HOME, "ads", _ads_ready)
-    seller_ping = await ping_site(
-        SELLER_PROFILE, SELLER_HOME, "seller", _seller_ready
-    )
+    # 有头已进业务页并双写 cookie 后：无头探测只做软探（短超时），
+    # 避免 Noon 卡死拖垮整条 ads-budget 恢复链路。
+    sso_ok = has_sso_cookies(ADS_PROFILE) and has_sso_cookies(SELLER_PROFILE)
+    if sso_ok and headed.get("ok"):
+        log("[unified] ④ 有头登录+SSO 已齐，软探测（失败不挡）")
+        ads_ping = await ping_site(
+            ADS_PROFILE, ADS_HOME, "ads", _ads_ready, quick=True
+        )
+        seller_ping = await ping_site(
+            SELLER_PROFILE, SELLER_HOME, "seller", _seller_ready, quick=True
+        )
+    else:
+        log("[unified] ④ 落盘后无头探测（网络抖动会重试；鉴权失败才真失败）")
+        ads_ping = await ping_site(ADS_PROFILE, ADS_HOME, "ads", _ads_ready)
+        seller_ping = await ping_site(
+            SELLER_PROFILE, SELLER_HOME, "seller", _seller_ready
+        )
     ping_ok = bool(ads_ping.get("ok") and seller_ping.get("ok"))
     auth_fail = bool(ads_ping.get("authFail") or seller_ping.get("authFail"))
-    sso_ok = has_sso_cookies(ADS_PROFILE) and has_sso_cookies(SELLER_PROFILE)
     net_only = (not ping_ok) and (not auth_fail) and (
         is_net_flake(str(ads_ping.get("error") or ""))
         or is_net_flake(str(seller_ping.get("error") or ""))
         or bool(ads_ping.get("netFlake"))
         or bool(seller_ping.get("netFlake"))
     )
-    # 有头两边都进业务页 + 双写 SSO cookie 已在：无头 HTTP2 抖动不判登录失败
-    ok = ping_ok or (bool(headed.get("ok")) and sso_ok and net_only and not auth_fail)
+    # 有头两边都进业务页 + 双写 SSO cookie 已在：无头探测失败也不判登录失败
+    ok = ping_ok or (
+        bool(headed.get("ok")) and sso_ok and not auth_fail
+    )
     payload = {
         "ok": ok,
         "mode": "unified-login",
@@ -436,6 +516,7 @@ async def _unified_login_async() -> dict:
 def run_unified_login() -> int:
     import asyncio
 
+    _UNIFIED_TRANSCRIPT.clear()
     try:
         payload = asyncio.run(_unified_login_async())
     except Exception as e:
@@ -443,8 +524,19 @@ def run_unified_login() -> int:
         payload = {"ok": False, "mode": "unified-login", "error": str(e)}
 
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-    p = LOG_DIR / f"pw_unified_login_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-    p.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    p = LOG_DIR / f"pw_unified_login_{stamp}.log"
+    body = "\n".join(
+        [
+            "=== transcript ===",
+            *_UNIFIED_TRANSCRIPT,
+            "",
+            "=== result ===",
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            "",
+        ]
+    )
+    p.write_text(body, encoding="utf-8")
     log(f"[unified] wrote {p}")
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     if not payload.get("ok"):

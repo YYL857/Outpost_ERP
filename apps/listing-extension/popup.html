@@ -6,7 +6,7 @@
     <style>
       body {
         font-family: system-ui, sans-serif;
-        width: 320px;
+        width: 340px;
         margin: 12px;
         font-size: 13px;
       }
@@ -38,16 +38,29 @@
         font-size: 12px;
         margin: 0 0 8px;
       }
+      .row2 {
+        display: flex;
+        gap: 6px;
+      }
+      .row2 button {
+        flex: 1;
+      }
     </style>
   </head>
   <body>
-    <p>在 Noon <strong>单个商品详情页</strong>采集对手标题/价格/卖点，写入 Listing inbox。</p>
+    <p>在 Noon <strong>单个商品详情页</strong>采集对手标题/价格/卖点，写入<strong>你自己的</strong> Listing inbox。</p>
     <p class="hint">
-      默认已指向办公室后端 <strong>192.168.1.112</strong>。一般不用改；连不上时再改下方地址并保存。
+      每位同事须填写自己的 Outpost
+      <strong>登录用户名</strong>（与网页登录相同），否则导入时看到空。
     </p>
+    <label for="username">Outpost 用户名</label>
+    <input id="username" type="text" placeholder="与网页登录名相同" autocomplete="username" />
     <label for="apiBase">Outpost API 地址</label>
     <input id="apiBase" type="text" placeholder="http://192.168.1.112:8787" />
-    <button id="saveApi" type="button">保存地址</button>
+    <div class="row2">
+      <button id="saveApi" type="button">保存设置</button>
+      <button id="ping" type="button">测试连接</button>
+    </div>
     <button id="capture" type="button">采集本品页 → Listing</button>
     <div id="msg"></div>
     <script src="popup.js"></script>

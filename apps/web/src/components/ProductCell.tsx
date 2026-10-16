@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { copyText } from "../lib/clipboard";
 
 type Props = {
   partnerSku: string;
@@ -47,6 +48,37 @@ function ProductThumb({
   );
 }
 
+function CopyableId({
+  value,
+  title,
+}: {
+  value: string;
+  title: string;
+}) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <span className="cat-id-chip" title={title}>
+      <span>{value}</span>
+      <button
+        type="button"
+        className="cat-copy-btn"
+        title={`复制 ${value}`}
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          void copyText(value).then((ok) => {
+            if (!ok) return;
+            setCopied(true);
+            window.setTimeout(() => setCopied(false), 1200);
+          });
+        }}
+      >
+        {copied ? "已复制" : "复制"}
+      </button>
+    </span>
+  );
+}
+
 /** 表格内产品展示：缩略图 + 名称 + SKU（复用 Catalog 样式） */
 export function ProductCell({
   partnerSku,
@@ -58,6 +90,8 @@ export function ProductCell({
 }: Props) {
   const name = (title || "").trim() || "—";
   const detailText = (detail || "").trim();
+  const sku = (partnerSku || "").trim();
+  const subText = (sub || "").trim();
   return (
     <div className="cat-product">
       <ProductThumb url={imageUrl || ""} title={name} size={thumbSize} />
@@ -71,13 +105,11 @@ export function ProductCell({
           </div>
         ) : null}
         <div className="cat-ids">
-          <span className="cat-id-chip" title="Partner SKU / 关联键">
-            {partnerSku}
-          </span>
-          {sub ? (
-            <span className="cat-id-chip" title={sub}>
-              {sub}
-            </span>
+          {sku ? (
+            <CopyableId value={sku} title="Partner SKU / 关联键" />
+          ) : null}
+          {subText ? (
+            <CopyableId value={subText} title={subText} />
           ) : null}
         </div>
       </div>

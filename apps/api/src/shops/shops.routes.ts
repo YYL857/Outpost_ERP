@@ -22,6 +22,7 @@ import {
 import type { AuthedRequest } from "../auth/middleware.js";
 import { requireAdmin } from "../auth/middleware.js";
 import { setSelectedShopId } from "../auth/workspace.js";
+import { setAuditDetail } from "../modules/audit/detail.js";
 
 function applyShopToState(shop: ShopRecord, loaded: AppState) {
   loaded.store.id = shop.id;
@@ -197,6 +198,22 @@ export function createShopsRouter(
     }
 
     const state = getShopState(nextShop.id);
+
+    setAuditDetail(req, {
+      summary:
+        prevSelected === nextShop.id
+          ? `确认当前店 ${nextShop.id}${setSyncDefault ? "（并设默认同步）" : ""}`
+          : `切换店铺 ${prevSelected || "?"} → ${nextShop.id}${
+              setSyncDefault ? "（并设默认同步）" : ""
+            }`,
+      entityType: "shop",
+      entityId: nextShop.id,
+      detail: {
+        from: prevSelected,
+        to: nextShop.id,
+        setSyncDefault,
+      },
+    });
 
     res.json({
       data: {

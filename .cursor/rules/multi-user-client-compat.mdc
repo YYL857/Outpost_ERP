@@ -1,0 +1,14 @@
+---
+description: Outpost 多用户客户端兼容——编码任务必须考虑局域网/非HTTPS同事机，并遵循 multi-user-client-compat Skill
+alwaysApply: true
+---
+
+# 多用户客户端兼容（强制拼接）
+
+Outpost ERP **不是开发者本机专用工具**。其他同事常用 `http://内网IP` 访问。
+
+凡编码 / 改前端 / 加复制·下载·打开本机能力的任务：
+
+1. **先 Read 并遵守** 项目 Skill：`.cursor/skills/multi-user-client-compat/SKILL.md`
+2. 剪贴板统一用 `apps/web/src/lib/clipboard.ts` 的 `copyText`（含非 HTTPS fallback）
+3. 禁止以「我本机 localhost 测过」作为完成标准；须考虑非 Secure Context、非本机路径、非管理员账号

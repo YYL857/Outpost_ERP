@@ -115,7 +115,7 @@ export function listSchedulers(): SchedulerItem[] {
       running: poller.running,
       lastRunAt: poller.lastRunAt,
       lastMessage: poller.lastMessage,
-      note: `多店错峰 · 每 ${poller.liveEveryN} tick 最多 1 店 Impex；Catalog/库存过期自动重拉`,
+      note: `多店错峰 · 每 ${poller.liveEveryN} tick 最多 1 店 Impex；订单落后优先；库存日更 09:30/16:00（14h 安全网）`,
     },
     {
       id: "assembly-sync",

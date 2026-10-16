@@ -53,7 +53,7 @@ python scripts/noon-guide-capture-pw/main.py
 - 落盘：`D:\outpost-data\noon-guide-capture\{shopId}\{section}\`
 - 说明：见该目录 `README.md`
 
-影刀旧流程 `outpost_noon_guide_capture` 仍可用，目录布局兼容。
+目录布局与历史采集输出兼容；生产向导补链以本 Playwright 脚本为准。
 
 ## 关键落地域名速查
 

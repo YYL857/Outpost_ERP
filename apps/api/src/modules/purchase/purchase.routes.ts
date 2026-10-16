@@ -53,6 +53,17 @@ import {
   tryAcquire1688LogisticsLock,
   writeLogisticsProgress,
 } from "./logistics-progress.js";
+import {
+  attachBatchTaskId,
+  buildReplenishBatchTemplateBuffer,
+  getReplenishBatch,
+  listReplenishBatchBriefs,
+  notifyShipperOfReplenishBatch,
+  parseReplenishBatchXlsx,
+  saveReplenishBatch,
+  templateDownloadFilename,
+  todayBatchDate,
+} from "./replenish-batch/index.js";
 
 function round2(n: number) {
   return Math.round(n * 100) / 100;
@@ -765,6 +776,108 @@ export function createPurchaseRouter(getState: () => AppState) {
       res.status(500).json({ error: msg });
     } finally {
       release1688LogisticsLock();
+    }
+  });
+
+  /**
+   * 补货采购批次（已下单）：导出标准模板 / 导入清洗 / 列表。
+   * 店铺由 PSKU 前缀识别；导入后通知阿沈。
+   */
+  router.get("/replenish-batches/template", (_req, res) => {
+    try {
+      const batchDate = todayBatchDate();
+      const buf = buildReplenishBatchTemplateBuffer(batchDate);
+      const filename = templateDownloadFilename(batchDate);
+      res.setHeader(
+        "Content-Type",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      );
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`,
+      );
+      res.send(buf);
+    } catch (e) {
+      res.status(500).json({
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  });
+
+  router.get("/replenish-batches", (_req, res) => {
+    try {
+      res.json({ data: { batches: listReplenishBatchBriefs(40) } });
+    } catch (e) {
+      res.status(500).json({
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  });
+
+  router.get("/replenish-batches/:id", (req, res) => {
+    try {
+      const id = String(req.params.id ?? "").trim();
+      const batch = getReplenishBatch(id);
+      if (!batch) return res.status(404).json({ error: "批次不存在" });
+      res.json({ data: { batch } });
+    } catch (e) {
+      res.status(500).json({
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  });
+
+  router.post("/replenish-batches/import", (req, res) => {
+    try {
+      const user = (req as AuthedRequest).user;
+      if (!user) return res.status(401).json({ error: "未登录" });
+      const base64 = String(req.body?.base64 ?? "").trim();
+      const filename = String(req.body?.filename ?? "补货采购.xlsx").trim();
+      if (!base64) {
+        return res.status(400).json({ error: "需要 base64（xlsx）" });
+      }
+      const buf = Buffer.from(base64, "base64");
+      const parsed = parseReplenishBatchXlsx(buf);
+      if (!parsed.lines.length) {
+        return res.status(400).json({
+          error: parsed.warnings[0] || "未解析到有效采购行",
+          data: { warnings: parsed.warnings, sheetName: parsed.sheetName },
+        });
+      }
+      let batch = saveReplenishBatch({
+        batchDate: parsed.batchDate,
+        sheetName: parsed.sheetName,
+        filename,
+        warnings: parsed.warnings,
+        lines: parsed.lines,
+        importedBy: { id: user.id, username: user.username },
+      });
+      const notify = notifyShipperOfReplenishBatch(batch, user);
+      if (notify.taskId) {
+        batch = attachBatchTaskId(batch.id, notify.taskId) ?? batch;
+      }
+      setAuditDetail(req, {
+        summary: `导入补货采购批次 ${batch.batchDate}（${batch.lineCount} 行）`,
+        entityType: "replenishBatch",
+        entityId: batch.id,
+        detail: {
+          batchDate: batch.batchDate,
+          lineCount: batch.lineCount,
+          taskId: notify.taskId,
+        },
+        body: null,
+      });
+      res.json({
+        data: {
+          batch,
+          notify,
+        },
+        message: `已导入 ${batch.lineCount} 行 · ${notify.message}`,
+      });
+    } catch (e) {
+      res.status(400).json({
+        error: e instanceof Error ? e.message : String(e),
+      });
     }
   });
 

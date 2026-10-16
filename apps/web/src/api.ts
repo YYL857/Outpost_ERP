@@ -97,7 +97,7 @@ export type ShopsPayload = {
   userId?: string | null;
 };
 
-export type PwJobName = "ads" | "sales" | "keepalive";
+export type PwJobName = "ads" | "sales" | "keepalive" | "ads-budget";
 
 export type PwJobStatus = {
   job: string;
@@ -116,8 +116,117 @@ export type PwJobStatus = {
     fromDate?: string;
     toDate?: string;
     cmd?: string;
+    mode?: string;
+    dryRun?: boolean;
     trigger?: string;
   } | null;
+};
+
+export type AdsBudgetScheduleStatus = {
+  enabled: boolean;
+  timerActive: boolean;
+  pollEveryMs: number;
+  shopIds: string[];
+  peakAt: string;
+  offpeakAt: string;
+  catchWindowMinutes: number;
+  lastPeakDay: string | null;
+  lastOffpeakDay: string | null;
+  lastRunAt: string | null;
+  lastMessage: string | null;
+  lastOk: boolean | null;
+  lastSlot: "peak" | "offpeak" | null;
+  note?: string;
+};
+
+export type AdsBudgetLastRun = {
+  finishedAt?: string;
+  finishedAtCst?: string;
+  ok?: boolean;
+  cmd?: string;
+  mode?: string;
+  shops?: string[];
+  trigger?: string;
+  message?: string;
+  applyOk?: number;
+  applyFailed?: number;
+  error?: string | null;
+} | null;
+
+/** 单次 apply 里一条活动变更（jsonl results[].results[]） */
+export type AdsBudgetRunCampaignChange = {
+  campaignId?: string;
+  psku?: string;
+  from?: number | null;
+  target?: number | null;
+  to?: number | null;
+  ok?: boolean;
+  dryRun?: boolean;
+  error?: string | null;
+  skip?: boolean;
+  reason?: string;
+};
+
+/** 广告预算运行历史一行（与 ads-budget-runs.jsonl 一致） */
+export type AdsBudgetRunRow = {
+  finishedAt?: string;
+  finishedAtCst?: string;
+  ok?: boolean;
+  cmd?: string;
+  mode?: string;
+  shops?: string[];
+  trigger?: string;
+  message?: string;
+  applyOk?: number;
+  applyFailed?: number;
+  error?: string | null;
+  dryRun?: boolean;
+  snapshotLog?: string;
+  /** 按店结果；成功时含活动 from→target */
+  results?: Array<{
+    shopId?: string;
+    error?: string;
+    mode?: string;
+    planned?: number;
+    todo?: number;
+    skipped?: number;
+    ok?: number;
+    failed?: number;
+    skippedDetail?: AdsBudgetRunCampaignChange[];
+    results?: AdsBudgetRunCampaignChange[];
+    finishedAt?: string;
+  }>;
+};
+
+/** 高峰目标权威行；与 D:\\outpost-data\\shops\\{shop}\\ads-budget\\baseline.csv 一致 */
+export type AdsBudgetBaselineRow = {
+  shopId: string;
+  campaignId: string;
+  campaignName: string;
+  psku: string;
+  baselineBudget: number | null;
+  /** 低峰目标；空表示 apply 用默认 5 */
+  offpeakBudget?: number | null;
+  lastSeenBudget: number | null;
+  mode: string;
+  enabled: boolean;
+  updatedAt: string;
+  needsBaseline: boolean;
+  updatedBy: string;
+};
+
+export type AdsBudgetBaselineTable = {
+  shopId: string;
+  path: string;
+  rows: AdsBudgetBaselineRow[];
+  defaultOffpeakBudget?: number;
+  note?: string;
+};
+
+export type AdsBudgetProductMetaTable = {
+  shopId: string;
+  byPsku: Record<string, { title: string; imageUrl: string }>;
+  count: number;
 };
 
 export type PwRunLogSummary = {
@@ -146,6 +255,10 @@ export type PwRunLogDetail = PwRunLogSummary & { stdout: string };
 export type PwExportSchedule = {
   job: "ads" | "sales";
   enabled: boolean;
+  /** 上海时区每天触发 HH:MM */
+  dailyAt?: string;
+  catchWindowMinutes?: number;
+  lastScheduledDay?: string | null;
   everyMs: number;
   range: string;
   shopIds: string[];
@@ -155,9 +268,22 @@ export type PwExportSchedule = {
   lastMessage: string | null;
   lastOk: boolean | null;
   timerActive?: boolean;
+  pollEveryMs?: number;
+  note?: string;
 };
 
 export type UserRole = "admin" | "ops_lead" | "ops" | "purchase";
+
+export type BrowserExtensionId = "listing" | "asn-booking";
+
+export type BrowserExtensionMeta = {
+  id: BrowserExtensionId;
+  folder: string;
+  title: string;
+  pageHint: string;
+  version: string;
+  available: boolean;
+};
 
 export type AuthUserPublic = {
   id: string;
@@ -264,6 +390,7 @@ export type TaskRecord = {
   updatedAt: string;
   ackedAt: string | null;
   rejectNotifiedAt: string | null;
+  reviewNotifiedAt: string | null;
 };
 
 export type TaskAssigneeOption = TaskPerson & { disabled: boolean };
@@ -706,7 +833,7 @@ export type ListingPromoJob = {
   brief: ListingPromoBrief;
   agentId?: string;
   runId?: string;
-  driverMode?: "folder" | "sdk" | "manual";
+  driverMode?: "folder" | "sdk" | "manual" | "rpa";
   images: ListingPromoImage[];
   userFeedback: Array<{ at: string; note: string; frameIndexes?: string[] }>;
   error?: string | null;
@@ -864,46 +991,6 @@ export type BestSellRow = {
   title: string;
   units: number;
   gmv: number;
-};
-
-export type InfoCheckTableMeta = {
-  docId: string;
-  label: string;
-  pulledAt: string | null;
-  headerCount: number;
-  headers: string[];
-  rowCount: number;
-  hasSnapshot: boolean;
-};
-
-export type InfoCheckMeta = {
-  product: InfoCheckTableMeta;
-  monthlyDeals: InfoCheckTableMeta;
-  infoCheck: InfoCheckTableMeta;
-  commonFields: string[];
-};
-
-export type InfoCheckCompareCell = {
-  field: string;
-  product: string;
-  monthlyDeals: string;
-  infoCheck: string;
-  mismatch: boolean;
-  sources?: {
-    product: string | null;
-    monthlyDeals: string | null;
-    infoCheck: string | null;
-  };
-};
-
-export type InfoCheckQueryRow = {
-  psku: string;
-  sources: {
-    product: Record<string, string> | null;
-    monthlyDeals: Record<string, string> | null;
-    infoCheck: Record<string, string> | null;
-  };
-  compare?: InfoCheckCompareCell[];
 };
 
 export type MarketWatchItem = {
@@ -1343,10 +1430,12 @@ export type DashboardOverview = {
     series: Array<{ date: string; units: number; amount: number }>;
   };
   ads: {
-    /** 上海日历昨天 */
+    /** 卡片展示日（昨日或最新可用日） */
     date?: string;
-    /** exact-day=单日事实；covering=区间覆盖昨天；none=无昨日广告 */
-    scope?: "exact-day" | "covering" | "none";
+    /** 口径目标日：上海日历昨天 */
+    requestedDate?: string;
+    /** exact-day=昨日单日；covering=覆盖昨日；latest-day=最新可用单日；none=无广告 */
+    scope?: "exact-day" | "covering" | "latest-day" | "none";
     spend: number;
     revenue: number;
     orders: number;
@@ -1361,6 +1450,10 @@ export type DashboardOverview = {
     stockSkuCount: number;
     salesSkuCount: number;
     onHandQty: number;
+    /** 分仓 Impex 上次成功（cursors.stockSince） */
+    stockSyncedAt?: string | null;
+    /** activeNet = Catalog stockFbnNet || 分仓 FBN */
+    stockMetric?: string;
     inTransitQty: number;
     inTransitSkuCount?: number;
     inTransitBoxCount?: number;
@@ -1487,6 +1580,53 @@ export type PurchaseSummary = {
   arrivingTodayCount?: number;
   alibaba1688HasSession?: boolean;
   coverageNote: string;
+};
+
+/** 补货采购批次（已下单 → 阿沈） */
+export type ReplenishBatchBrief = {
+  id: string;
+  batchDate: string;
+  importedAt: string;
+  importedBy: string;
+  lineCount: number;
+  totalQty: number;
+  shopLabels: string[];
+  taskId: string | null;
+};
+
+export type ReplenishBatchLine = {
+  batchDate: string;
+  partnerSku: string;
+  shop: string;
+  shopName: string;
+  name: string;
+  spec: string;
+  qty: number;
+  modePref: string;
+  note: string;
+};
+
+export type ReplenishBatchShopRollup = {
+  shop: string;
+  shopName: string;
+  skuCount: number;
+  totalQty: number;
+  lines: ReplenishBatchLine[];
+};
+
+export type ReplenishBatchRecord = {
+  id: string;
+  batchDate: string;
+  importedAt: string;
+  importedBy: { id: string; username: string };
+  sheetName: string;
+  filename: string;
+  warnings: string[];
+  lineCount: number;
+  totalQty: number;
+  lines: ReplenishBatchLine[];
+  byShop: ReplenishBatchShopRollup[];
+  taskId: string | null;
 };
 
 export type PurchaseCostRow = {
@@ -1746,6 +1886,72 @@ export type ForwarderCargoHint = {
   partnerSku: string;
   cargoKind: string;
   updatedAt: string;
+};
+
+/** 发货搭配 Phase1：路由规则 */
+export type ShippingRouteRules = {
+  updatedAt: string;
+  generalForwarder: string;
+  sensitiveForwarder: string;
+  batteryForwarder: string;
+  coffeeForwarder: string;
+  bandForwarder: string;
+  lampForwarder: string;
+  glassesForwarder: string;
+  batteryToHansha: boolean;
+  batteryToHanshaSince: string;
+};
+
+export type OutboundPoolLineView = {
+  id: string;
+  partnerSku: string;
+  name: string;
+  shop: string;
+  modePref: string;
+  qty: number;
+  unitKg: number | null;
+  weightKg: number | null;
+  note: string;
+  warehouseType: string;
+  suggestForwarder: string;
+  suggestReason: string;
+  hintCargoKind: string | null;
+  cargoGap: boolean;
+};
+
+export type OutboundPoolPayload = {
+  updatedAt: string;
+  lines: OutboundPoolLineView[];
+  gapCount: number;
+};
+
+export type OutboundCargoGap = {
+  partnerSku: string;
+  name: string;
+  shop: string;
+  suggestForwarder: string;
+  warehouseType: string;
+  qty: number;
+};
+
+export type RateRollupRow = {
+  forwarder: string;
+  cargoKind: string;
+  mode: string;
+  ticketCount: number;
+  paidSum: number;
+  weightSum: number;
+  cbmSum: number;
+  medianRmbPerKg: number | null;
+  medianRmbPerCbm: number | null;
+};
+
+export type RateSamplesPayload = {
+  updatedAt: string;
+  sourceNote: string;
+  sampleCount: number;
+  rollup: RateRollupRow[];
+  samples?: unknown[];
 };
 
 export type ChannelHistoryPayload = {
@@ -2609,7 +2815,7 @@ export const api = {
   me: () =>
     request<{
       data: { user: AuthUserPublic; selectedShopId: string };
-    }>("/auth/me"),
+    }>("/auth/me", { signal: AbortSignal.timeout(15_000) }),
   listUsers: () => request<{ data: AuthUserPublic[] }>("/auth/users"),
   getAuditDaily: (day?: string) => {
     const q = new URLSearchParams();
@@ -2741,6 +2947,11 @@ export const api = {
   dismissTaskReject: (id: string) =>
     request<{ data: TaskRecord }>(
       `/tasks/${encodeURIComponent(id)}/dismiss-reject`,
+      { method: "POST", body: JSON.stringify({}) },
+    ),
+  dismissTaskReview: (id: string) =>
+    request<{ data: TaskRecord }>(
+      `/tasks/${encodeURIComponent(id)}/dismiss-review`,
       { method: "POST", body: JSON.stringify({}) },
     ),
   getShops: () => request<{ data: ShopsPayload }>("/shops"),
@@ -3221,11 +3432,17 @@ export const api = {
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(30_000),
     }),
-  startListingPromoJob: (id: string) =>
-    request<{ data: ListingDraft; meta?: { jobId?: string } }>(
-      `/listing/drafts/${id}/promo/jobs`,
-      { method: "POST", signal: AbortSignal.timeout(60_000) },
-    ),
+  startListingPromoJob: (id: string, opts?: { browserOnLocalhost?: boolean }) =>
+    request<{
+      data: ListingDraft;
+      meta?: { jobId?: string; browserOnLocalhost?: boolean };
+    }>(`/listing/drafts/${id}/promo/jobs`, {
+      method: "POST",
+      body: JSON.stringify({
+        browserOnLocalhost: Boolean(opts?.browserOnLocalhost),
+      }),
+      signal: AbortSignal.timeout(60_000),
+    }),
   getListingPromoJob: (id: string, jobId: string) =>
     request<{ data: ListingPromoJob }>(
       `/listing/drafts/${id}/promo/jobs/${jobId}`,
@@ -3239,7 +3456,11 @@ export const api = {
   reviseListingPromoJob: (
     id: string,
     jobId: string,
-    body: { note: string; frameIndexes?: string[] },
+    body: {
+      note: string;
+      frameIndexes?: string[];
+      browserOnLocalhost?: boolean;
+    },
   ) =>
     request<{ data: ListingDraft }>(
       `/listing/drafts/${id}/promo/jobs/${jobId}/revise`,
@@ -3254,10 +3475,44 @@ export const api = {
       `/listing/drafts/${id}/promo/jobs/${jobId}/approve`,
       { method: "POST", signal: AbortSignal.timeout(30_000) },
     ),
+  openListingPromoOutFolder: (
+    id: string,
+    jobId: string,
+    opts?: { browserOnLocalhost?: boolean },
+  ) =>
+    request<{
+      data: { path: string; opened: boolean; hint?: string };
+    }>(`/listing/drafts/${id}/promo/jobs/${jobId}/open-out`, {
+      method: "POST",
+      body: JSON.stringify({
+        browserOnLocalhost: Boolean(opts?.browserOnLocalhost),
+      }),
+      signal: AbortSignal.timeout(15_000),
+    }),
   listingPromoImageUrl: (id: string, jobId: string, filename: string) =>
     `${BASE}/listing/drafts/${id}/promo/jobs/${jobId}/images/${encodeURIComponent(filename)}`,
   listingPromoPromptUrl: (id: string, jobId: string) =>
     `${BASE}/listing/drafts/${id}/promo/jobs/${jobId}/prompt`,
+  listingPromoPackUrl: (id: string, jobId: string) =>
+    `${BASE}/listing/drafts/${id}/promo/jobs/${jobId}/pack.zip`,
+  listingExtensionZipUrl: () => `${BASE}/listing/extension.zip`,
+  listBrowserExtensions: () =>
+    request<{ data: BrowserExtensionMeta[]; message?: string }>("/extensions"),
+  browserExtensionZipUrl: (id: BrowserExtensionId) =>
+    `${BASE}/extensions/${encodeURIComponent(id)}/zip`,
+  uploadListingPromoOutImages: (
+    id: string,
+    jobId: string,
+    files: Array<{ filename: string; base64: string }>,
+  ) =>
+    request<{ data: ListingDraft }>(
+      `/listing/drafts/${id}/promo/jobs/${jobId}/upload-out`,
+      {
+        method: "POST",
+        body: JSON.stringify({ files }),
+        signal: AbortSignal.timeout(180_000),
+      },
+    ),
   getSalesSummary: () => request<{ data: SalesSummary }>("/sales/summary"),
   getSalesOrders: (opts?: { page?: number; pageSize?: number }) => {
     const q = new URLSearchParams();
@@ -3283,41 +3538,6 @@ export const api = {
     }>(`/sales/facts?${q.toString()}`);
   },
   getBestSell: () => request<{ data: BestSellRow[] }>("/analytics/best-sell"),
-  getInfoCheckMeta: () => request<{ data: InfoCheckMeta }>("/info-check/meta"),
-  getInfoCheckQuery: (opts: {
-    q?: string;
-    mode?: "exact" | "fuzzy";
-    fields?: string[];
-    limit?: number;
-  }) => {
-    const q = new URLSearchParams();
-    if (opts.q?.trim()) q.set("q", opts.q.trim());
-    q.set("mode", opts.mode ?? "fuzzy");
-    if (opts.fields?.length) q.set("fields", opts.fields.join(","));
-    if (opts.limit != null) q.set("limit", String(opts.limit));
-    return request<{
-      data: InfoCheckQueryRow[];
-      meta: {
-        totalMatched: number;
-        truncated: boolean;
-        mode: string;
-        fields: string[];
-        commonFields: string[];
-      };
-    }>(`/info-check/query?${q.toString()}`);
-  },
-  refreshInfoCheck: () =>
-    request<{
-      data: {
-        runId: string;
-        results: Array<{
-          docId: string;
-          ok: boolean;
-          error?: { message?: string; code?: string };
-        }>;
-        tables: InfoCheckMeta;
-      };
-    }>("/info-check/refresh", { method: "POST" }),
   getMarketIntelStatus: () =>
     request<{ data: MarketIntelStatus }>("/market-intel/status"),
   getMarketIntelCategoryFitness: (categoryId?: string) =>
@@ -3922,11 +4142,14 @@ export const api = {
       meta?: { hint?: string };
     }>("/ads/yingdao-export/run", { method: "POST", body: "{}" }),
   runPwJob: (
-    job: "ads" | "sales" | "keepalive",
+    job: PwJobName,
     body?: {
       shopIds?: string[];
       shopId?: string;
-      cmd?: "ui" | "login" | "probe";
+      cmd?: "ui" | "login" | "probe" | "apply" | "sync";
+      mode?: "auto" | "offpeak" | "peak" | "idle";
+      dryRun?: boolean;
+      refreshBaseline?: boolean;
       range?:
         | "today"
         | "yesterday"
@@ -3950,13 +4173,102 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body ?? {}),
     }),
-  getPwJobStatus: (job: "ads" | "sales" | "keepalive") =>
+  getPwJobStatus: (job: PwJobName) =>
     request<{ data: PwJobStatus }>(`/pw-rpa/${job}/status`),
   listPwJobs: () =>
     request<{
       data: PwJobStatus[];
       meta?: { hint?: string; adsRanges?: string[] };
     }>("/pw-rpa/jobs"),
+  getAdsBudgetSchedule: () =>
+    request<{ data: AdsBudgetScheduleStatus }>("/pw-rpa/ads-budget/schedule"),
+  saveAdsBudgetSchedule: (body: { enabled: boolean }) =>
+    request<{ data: AdsBudgetScheduleStatus }>("/pw-rpa/ads-budget/schedule", {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+  getAdsBudgetLast: () =>
+    request<{ data: AdsBudgetLastRun }>("/pw-rpa/ads-budget/last"),
+  listAdsBudgetRuns: (q?: { shopId?: string; limit?: number }) => {
+    const p = new URLSearchParams();
+    if (q?.shopId) p.set("shopId", q.shopId);
+    if (q?.limit != null) p.set("limit", String(q.limit));
+    const qs = p.toString();
+    return request<{
+      data: { items: AdsBudgetRunRow[]; total: number; path: string };
+    }>(`/pw-rpa/ads-budget/runs${qs ? `?${qs}` : ""}`);
+  },
+  getAdsBudgetBaseline: (shopId?: string) => {
+    const q = shopId ? `?shopId=${encodeURIComponent(shopId)}` : "";
+    return request<{ data: AdsBudgetBaselineTable }>(
+      `/pw-rpa/ads-budget/baseline${q}`,
+    );
+  },
+  getAdsBudgetProductMeta: (shopId?: string) => {
+    const q = shopId ? `?shopId=${encodeURIComponent(shopId)}` : "";
+    return request<{ data: AdsBudgetProductMetaTable }>(
+      `/pw-rpa/ads-budget/product-meta${q}`,
+    );
+  },
+  patchAdsBudgetBaseline: (
+    campaignId: string,
+    body: {
+      shopId?: string;
+      baselineBudget?: number | null;
+      offpeakBudget?: number | null;
+      enabled?: boolean;
+      psku?: string;
+      campaignName?: string;
+    },
+  ) =>
+    request<{ data: AdsBudgetBaselineRow }>(
+      `/pw-rpa/ads-budget/baseline/${encodeURIComponent(campaignId)}`,
+      { method: "PATCH", body: JSON.stringify(body) },
+    ),
+  createAdsBudgetBaseline: (body: {
+    shopId?: string;
+    campaignId: string;
+    campaignName?: string;
+    psku?: string;
+    baselineBudget?: number | null;
+    offpeakBudget?: number | null;
+    enabled?: boolean;
+  }) =>
+    request<{ data: AdsBudgetBaselineRow; meta?: AdsBudgetBaselineTable }>(
+      "/pw-rpa/ads-budget/baseline",
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  importAdsBudgetBaseline: (body: {
+    shopId?: string;
+    rows: Array<{
+      campaignId: string;
+      baselineBudget?: number | null;
+      offpeakBudget?: number | null;
+      enabled?: boolean;
+      psku?: string;
+      campaignName?: string;
+    }>;
+  }) =>
+    request<{
+      data: {
+        shopId: string;
+        updated: number;
+        skipped: number;
+        skippedIds: string[];
+        total: number;
+      };
+      meta?: AdsBudgetBaselineTable;
+    }>("/pw-rpa/ads-budget/baseline/import", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  deleteAdsBudgetBaseline: (campaignId: string, shopId?: string) => {
+    const q = shopId ? `?shopId=${encodeURIComponent(shopId)}` : "";
+    return request<{ data: { ok: boolean; campaignId: string } }>(
+      `/pw-rpa/ads-budget/baseline/${encodeURIComponent(campaignId)}${q}`,
+      { method: "DELETE" },
+    );
+  },
   listPwRunLogs: (q?: {
     job?: "ads" | "sales";
     from?: string;
@@ -3986,7 +4298,8 @@ export const api = {
     job: "ads" | "sales",
     body: {
       enabled: boolean;
-      everyHours: number;
+      dailyAt?: string;
+      everyHours?: number;
       range: string;
       shopIds?: string[];
       fromDate?: string;
@@ -4045,6 +4358,50 @@ export const api = {
     request<{ data: AdsFactRow[]; meta: { total: number } }>("/ads/facts"),
   getPurchaseSummary: () =>
     request<{ data: PurchaseSummary }>("/purchase/summary"),
+  downloadReplenishBatchTemplate: async () => {
+    const res = await fetch(`${BASE}/purchase/replenish-batches/template`, {
+      credentials: "include",
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({} as { error?: string }));
+      throw new Error(body.error || `导出失败 ${res.status}`);
+    }
+    const blob = await res.blob();
+    const cd = res.headers.get("Content-Disposition") || "";
+    const m = cd.match(/filename\*=UTF-8''([^;]+)|filename="?([^";]+)"?/i);
+    const filename = decodeURIComponent(
+      m?.[1] || m?.[2] || `补货采购_${new Date().toISOString().slice(0, 10)}.xlsx`,
+    );
+    return { blob, filename };
+  },
+  listReplenishBatches: () =>
+    request<{ data: { batches: ReplenishBatchBrief[] } }>(
+      "/purchase/replenish-batches",
+    ),
+  getReplenishBatch: (id: string) =>
+    request<{ data: { batch: ReplenishBatchRecord } }>(
+      `/purchase/replenish-batches/${encodeURIComponent(id)}`,
+    ),
+  importReplenishBatch: (body: { filename: string; base64: string }) =>
+    request<{
+      data: {
+        batch: ReplenishBatchRecord;
+        notify: { taskId: string | null; message: string };
+      };
+      message?: string;
+    }>("/purchase/replenish-batches/import", {
+      method: "POST",
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(120_000),
+    }),
+  listShippingPurchaseArrivals: () =>
+    request<{ data: { batches: ReplenishBatchBrief[] } }>(
+      "/shipping-ops/purchase-arrivals",
+    ),
+  getShippingPurchaseArrival: (id: string) =>
+    request<{ data: { batch: ReplenishBatchRecord } }>(
+      `/shipping-ops/purchase-arrivals/${encodeURIComponent(id)}`,
+    ),
   getPurchaseCosts: (opts?: { page?: number; pageSize?: number }) => {
     const q = new URLSearchParams();
     q.set("page", String(opts?.page ?? 1));
@@ -4347,6 +4704,21 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  /** Impex stock + catalog(+sales) → 重算补货本地表 */
+  syncReplenishStockSales: (opts?: { skipSales?: boolean }) =>
+    request<{
+      data: {
+        shopId: string;
+        pulled: string[];
+        errors: string[];
+        workbook: { ok: boolean; prefixes: string[]; message: string };
+      };
+      message?: string;
+    }>("/replenish/sync-stock-sales", {
+      method: "POST",
+      body: JSON.stringify({ skipSales: opts?.skipSales }),
+      signal: AbortSignal.timeout(20 * 60 * 1000),
+    }),
   syncReplenishFeishuDaily: () =>
     request<{ data: unknown; message?: string }>(
       "/replenish/sync-feishu-daily",
@@ -4453,6 +4825,47 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(body),
     }),
+  getShippingRouteRules: () =>
+    request<{ data: ShippingRouteRules }>("/shipping-ops/route-rules"),
+  saveShippingRouteRules: (body: Partial<ShippingRouteRules>) =>
+    request<{ data: ShippingRouteRules; message?: string }>(
+      "/shipping-ops/route-rules",
+      { method: "PUT", body: JSON.stringify(body) },
+    ),
+  getOutboundPool: () =>
+    request<{ data: OutboundPoolPayload }>("/shipping-ops/outbound-pool"),
+  getOutboundPoolGaps: () =>
+    request<{
+      data: { gaps: OutboundCargoGap[]; options: CargoKindOption[] };
+    }>("/shipping-ops/outbound-pool/gaps"),
+  importOutboundPoolXlsx: (body: { filename: string; base64: string }) =>
+    request<{
+      data: OutboundPoolPayload & {
+        imported: number;
+        sheetName: string;
+        warnings: string[];
+        filename: string;
+      };
+      message?: string;
+    }>("/shipping-ops/outbound-pool/import", {
+      method: "POST",
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(120_000),
+    }),
+  clearOutboundPool: () =>
+    request<{ data: OutboundPoolPayload; message?: string }>(
+      "/shipping-ops/outbound-pool",
+      { method: "DELETE" },
+    ),
+  getRateSamples: (rebuild = false) =>
+    request<{ data: RateSamplesPayload }>(
+      `/shipping-ops/rate-samples${rebuild ? "?rebuild=1" : ""}`,
+    ),
+  rebuildRateSamples: () =>
+    request<{ data: RateSamplesPayload; message?: string }>(
+      "/shipping-ops/rate-samples/rebuild",
+      { method: "POST", signal: AbortSignal.timeout(120_000) },
+    ),
   cropShippingLabels: (body: { filename: string; base64: string }) =>
     request<{ data: LabelCropResult; message?: string }>(
       "/shipping-ops/labels/crop",

@@ -15,6 +15,20 @@ function fmtInt(n: number) {
   return n.toLocaleString("en-US");
 }
 
+/** 库存同步时间（上海墙钟，短格式） */
+function fmtStockSync(iso: string) {
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return iso.slice(0, 16);
+  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(new Date(t));
+}
+
 function Trend({ pct }: { pct: number | null | undefined }) {
   if (pct == null || !Number.isFinite(pct)) {
     return <span className="dash-trend is-flat">较上日 —</span>;
@@ -213,7 +227,11 @@ export function HomePage() {
 
         <article className="dash-card">
           <div className="dash-card-top">
-            <h3>广告归因（昨日）</h3>
+            <h3>
+              {ads.scope === "latest-day"
+                ? "广告归因（最新）"
+                : "广告归因（昨日）"}
+            </h3>
             <Link className="dash-link" to="/ads">
               广告管理
             </Link>
@@ -225,15 +243,19 @@ export function HomePage() {
           <p className="dash-sub">
             花费 {fmtSar(ads.spend)} · 带来收益 {fmtSar(ads.revenue)}
             {ads.contributionPct != null
-              ? ` · 占昨日销售 ${ads.contributionPct}%`
+              ? ads.scope === "latest-day"
+                ? ` · 占当日销售 ${ads.contributionPct}%`
+                : ` · 占昨日销售 ${ads.contributionPct}%`
               : ""}
           </p>
           <p className="dash-hint muted">
             {ads.scope === "none" || (!ads.reportFrom && !ads.date)
-              ? "暂无昨日广告报表"
-              : ads.scope === "covering"
-                ? `${ads.date ?? ads.reportFrom} · 区间覆盖估算（非单日）`
-                : `${ads.date ?? ads.reportFrom ?? "—"} · 单日归因`}
+              ? "暂无广告报表"
+              : ads.scope === "latest-day"
+                ? `${ads.date ?? ads.reportFrom} · 最新可用（昨日 ${ads.requestedDate ?? "—"} 约 17:00 入库）`
+                : ads.scope === "covering"
+                  ? `${ads.date ?? ads.reportFrom} · 区间覆盖估算（非单日）`
+                  : `${ads.date ?? ads.reportFrom ?? "—"} · 单日归因`}
           </p>
         </article>
       </section>
@@ -242,7 +264,12 @@ export function HomePage() {
         <article className="dash-kpi">
           <h4>有库存 SKU</h4>
           <p>{fmtInt(data.catalog.stockSkuCount)}</p>
-          <span className="muted">qty&gt;0 · 最近同步快照</span>
+          <span className="muted">
+            对齐 Noon Active Net
+            {data.catalog.stockSyncedAt
+              ? ` · 库存同步 ${fmtStockSync(data.catalog.stockSyncedAt)}`
+              : " · 待同步分仓"}
+          </span>
         </article>
         <Link className="dash-kpi dash-kpi-link" to="/shipping#packing-in-transit">
           <h4>在库 / 在途</h4>
@@ -252,7 +279,7 @@ export function HomePage() {
             {fmtInt(data.catalog.inTransitQty)}
           </p>
           <span className="muted">
-            点击查看票/箱明细
+            Active Net / 在途
             {data.catalog.inTransitTicketCount
               ? ` · ${data.catalog.inTransitTicketCount}票/${data.catalog.inTransitBoxCount ?? 0}箱`
               : ""}

@@ -80,20 +80,58 @@ def _looks_like_noon_otp(from_addr: str, subject: str, body: str) -> bool:
     return any(k in blob for k in keys)
 
 
-_OTP_PATTERNS = (
-    re.compile(r"(?:verification|one[- ]?time|otp|code|验证码)\D{0,24}(\d{4,8})", re.I),
-    re.compile(r"\b(\d{6})\b"),
-    re.compile(r"\b(\d{4,8})\b"),
+# 勿用裸 \d{6} 扫原始 HTML：邮件模板里的 #000000 / 字号等会误命中。
+_OTP_NEAR_KEYWORD = re.compile(
+    r"(?:verification\s*code|one[- ]?time(?:\s*(?:password|code|passcode))?|"
+    r"\botp\b|passcode|security\s*code|验证码|"
+    r"(?:your|login)\s+code)\D{0,48}(\d{4,8})",
+    re.I,
 )
+_OTP_SIX = re.compile(r"(?<![#\d])(\d{6})(?!\d)")
+_OTP_FOUR_TO_EIGHT = re.compile(r"(?<![#\d])(\d{4,8})(?!\d)")
+
+
+def _plain_for_otp(text: str) -> str:
+    """去掉 HTML/CSS，避免从颜色值、尺寸里抠数字。"""
+    t = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", text)
+    t = re.sub(r"(?is)<[^>]+>", " ", t)
+    t = re.sub(r"&#(\d+);", lambda m: chr(int(m.group(1))) if int(m.group(1)) < 0x110000 else " ", t)
+    t = (
+        t.replace("&nbsp;", " ")
+        .replace("&lt;", " ")
+        .replace("&gt;", " ")
+        .replace("&amp;", " ")
+    )
+    # 去掉残余 hex 色，防止 #000000 残留
+    t = re.sub(r"#[0-9a-fA-F]{3,8}\b", " ", t)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def _plausible_otp(code: str) -> bool:
+    if not code or not code.isdigit() or not (4 <= len(code) <= 8):
+        return False
+    # 全相同数字几乎总是 CSS/占位（#000000），不是真 OTP
+    if len(set(code)) == 1:
+        return False
+    if code in ("123456", "654321", "012345", "123123"):
+        return False
+    return True
 
 
 def extract_otp_code(text: str) -> str | None:
     if not text:
         return None
-    for pat in _OTP_PATTERNS:
-        m = pat.search(text)
-        if m:
+    plain = _plain_for_otp(text)
+    for blob in (plain, text):
+        m = _OTP_NEAR_KEYWORD.search(blob)
+        if m and _plausible_otp(m.group(1)):
             return m.group(1)
+    # 纯文本里优先 6 位
+    for pat in (_OTP_SIX, _OTP_FOUR_TO_EIGHT):
+        for m in pat.finditer(plain):
+            code = m.group(1)
+            if _plausible_otp(code):
+                return code
     return None
 
 

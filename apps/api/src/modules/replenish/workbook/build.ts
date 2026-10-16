@@ -99,7 +99,7 @@ export function buildWorkbookRows(opts: {
     title: string;
     salesD90: number;
     monthlyAvg: number;
-    /** 可售 = FBN仓 + supermall */
+    /** 可售 = Catalog Active Net（assemble inventory.fbn） */
     fbn: number;
     fbnWh: number;
     supermall: number;
@@ -119,16 +119,22 @@ export function buildWorkbookRows(opts: {
     const salesD90 = Number(row.sales.d90.units) || 0;
     const monthlyAvg = round4(salesD90 / 3);
     const m = manual.get(psku);
-    // 可售口径：分仓 FBN + supermall（比 Catalog stock_fbn_net 更接近门户 Active Net）
-    const inv = sumInventory(opts.state.stock ?? [], psku);
-    const fbnWh = Number(inv.fbn) || 0;
-    const supermall = Number(inv.supermall) || 0;
+    // 可售：与门户 Active Net 一致（assemble 已优先 stock_fbn_net，否则分仓 FBN）
+    // FBN 列 / supermall：仍用分仓 ledger，便于对照
+    const ledger = sumInventory(opts.state.stock ?? [], psku);
+    const fbnWh = Number(ledger.fbn) || 0;
+    const supermall = Number(ledger.supermall) || 0;
+    const assembledFbn = row.inventory?.fbn;
+    const activeNet =
+      assembledFbn != null && Number.isFinite(assembledFbn)
+        ? Math.max(0, Math.floor(Number(assembledFbn)))
+        : fbnWh;
     drafts.push({
       partnerSku: psku,
       title: row.title || psku,
       salesD90,
       monthlyAvg,
-      fbn: fbnWh + supermall,
+      fbn: activeNet,
       fbnWh,
       supermall,
       imageUrl: row.imageUrl || "",
@@ -149,7 +155,7 @@ export function buildWorkbookRows(opts: {
       d.monthlyAvg > 0
         ? demandFromMonthlyAvg(d.monthlyAvg, coverMonths)
         : 0;
-    // d.fbn 已是可售合计（FBN仓+supermall）；建议补小数往上取整
+    // d.fbn = Active Net 可售；建议补小数往上取整
     const rawSuggest = demandQty - d.fbn - inTransit;
     const suggestQty =
       d.monthlyAvg > 0 ? ceilSuggestQty(rawSuggest) : 0;

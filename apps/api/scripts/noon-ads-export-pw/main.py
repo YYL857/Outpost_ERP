@@ -417,66 +417,154 @@ def _preset_click_labels() -> tuple[str, str]:
     return "Yesterday", "昨天"
 
 
+def _date_picker_root(page):
+    """只在日期弹层内找输入框，绝不碰 Search campaigns。"""
+    # 优先：含 Start date 的弹层（Noon Custom range）
+    with_start = page.locator(
+        "[role='dialog'], [data-radix-popper-content-wrapper], "
+        "[class*='Popover'], [class*='popover'], [class*='datepicker' i], "
+        "[class*='DatePicker'], [class*='date-picker' i]"
+    ).filter(
+        has=page.get_by_text(re.compile(r"Start\s*date|End\s*date", re.I))
+    )
+    return with_start.first
+
+
+async def _click_calendar_day(root, day: int) -> bool:
+    """点日历格子上的日号（同日起止则点两次 = 起+止）。"""
+    day_re = re.compile(rf"^\s*{day}\s*$")
+    candidates = [
+        root.get_by_role("gridcell", name=day_re),
+        root.locator(f"[role='gridcell']:text-is('{day}')"),
+        root.locator(f"button:text-is('{day}')"),
+        root.locator(f"td:text-is('{day}')"),
+    ]
+    for loc in candidates:
+        try:
+            cell = loc.first
+            if not await cell.is_visible(timeout=800):
+                continue
+            await cell.click(timeout=2000)
+            return True
+        except Exception:
+            continue
+    return False
+
+
+async def _click_custom_apply(page, root) -> bool:
+    """
+    Custom range 选完日期后点 Apply（人手必点；漏点则区间不生效）。
+    优先弹层内按钮，避免点到页面其它 Apply。
+    """
+    apply_re = re.compile(r"^\s*Apply\s*$", re.I)
+    candidates = [
+        root.get_by_role("button", name=apply_re),
+        root.locator("button").filter(has_text=apply_re),
+        root.get_by_text(apply_re),
+        page.get_by_role("button", name=apply_re),
+        page.locator("[role='dialog'] button").filter(has_text=apply_re),
+        page.locator("button").filter(has_text=apply_re),
+    ]
+    for loc in candidates:
+        try:
+            btn = loc.first
+            await btn.wait_for(state="visible", timeout=2500)
+            try:
+                await btn.click(timeout=2500)
+            except Exception:
+                await btn.click(timeout=2500, force=True)
+            log("[date] Apply 已点击")
+            return True
+        except Exception:
+            continue
+    return False
+
+
 async def _fill_custom_range(page, from_ymd: str, to_ymd: str) -> None:
     from_d = datetime.strptime(from_ymd, "%Y-%m-%d")
     to_d = datetime.strptime(to_ymd, "%Y-%m-%d")
     start_txt = from_d.strftime("%d/%m/%Y")
     end_txt = to_d.strftime("%d/%m/%Y")
+    root = _date_picker_root(page)
+    try:
+        await root.wait_for(state="visible", timeout=4000)
+    except Exception as e:
+        raise RuntimeError(
+            "Custom range 弹层未打开（勿往 Search campaigns 填日期）"
+        ) from e
+
     filled = False
-    for start_sel in (
-        "input[placeholder*='Start' i]",
-        "input[aria-label*='Start' i]",
-        "input[placeholder*='From' i]",
-    ):
-        try:
-            loc = page.locator(start_sel).first
-            await loc.wait_for(state="visible", timeout=2500)
-            await loc.click(timeout=2000)
-            await loc.fill(start_txt)
-            filled = True
-            break
-        except Exception:
-            continue
+    # 优先日历点选：同日起止双击同一天（与人手一致）
+    same_day = from_ymd == to_ymd
+    if await _click_calendar_day(root, from_d.day):
+        await page.wait_for_timeout(200)
+        if same_day:
+            filled = await _click_calendar_day(root, from_d.day)
+            if filled:
+                log(f"[date] 日历同日双击 day={from_d.day}")
+        else:
+            filled = await _click_calendar_day(root, to_d.day)
+            if filled:
+                log(f"[date] 日历点选 {from_d.day}..{to_d.day}")
+            else:
+                log("[date] 日历终点未点中，改填 Start/End 输入框")
+                filled = False
+
     if not filled:
-        vis = page.locator("input:visible")
-        n = await vis.count()
-        if n >= 2:
-            await vis.nth(0).click()
-            await vis.nth(0).fill(start_txt)
-            await vis.nth(1).click()
-            await vis.nth(1).fill(end_txt)
-            filled = True
-    else:
-        for end_sel in (
+        start_sels = (
+            "input[placeholder*='Start' i]",
+            "input[aria-label*='Start' i]",
+            "input[placeholder*='From' i]",
+        )
+        end_sels = (
             "input[placeholder*='End' i]",
             "input[aria-label*='End' i]",
             "input[placeholder*='To' i]",
-        ):
+        )
+        for start_sel in start_sels:
             try:
-                loc = page.locator(end_sel).first
-                await loc.wait_for(state="visible", timeout=2000)
+                loc = root.locator(start_sel).first
+                await loc.wait_for(state="visible", timeout=2500)
                 await loc.click(timeout=2000)
-                await loc.fill(end_txt)
+                await loc.fill(start_txt)
+                filled = True
                 break
             except Exception:
                 continue
-    try:
-        await _click_first(
-            page,
-            [
-                "role=button[name='Apply']",
-                "button:has-text('Apply')",
-                "button:has-text('Done')",
-                "button:has-text('OK')",
-            ],
-            timeout_ms=2500,
-            label="date-apply",
-        )
-    except Exception as e:
-        log(f"[date] custom Apply 跳过: {e}")
-        await page.keyboard.press("Enter")
+        if filled:
+            for end_sel in end_sels:
+                try:
+                    loc = root.locator(end_sel).first
+                    await loc.wait_for(state="visible", timeout=2000)
+                    await loc.click(timeout=2000)
+                    await loc.fill(end_txt)
+                    break
+                except Exception:
+                    continue
+        else:
+            # 弹层内可见 input，排除 Search campaigns
+            vis = root.locator(
+                "input:visible:not([placeholder*='Search' i]):not([placeholder*='campaign' i])"
+            )
+            n = await vis.count()
+            if n >= 2:
+                await vis.nth(0).click()
+                await vis.nth(0).fill(start_txt)
+                await vis.nth(1).click()
+                await vis.nth(1).fill(end_txt)
+                filled = True
+                log("[date] 用弹层内前两个非搜索 input 填起止")
+
     if not filled:
-        raise RuntimeError("Custom range 未找到日期输入框")
+        raise RuntimeError("Custom range 未找到日期输入框/日历（已避开搜索栏）")
+
+    # 双击/填完日期后必须点 Apply，否则区间不会生效
+    await page.wait_for_timeout(300)
+    applied = await _click_custom_apply(page, root)
+    if not applied:
+        raise RuntimeError("Custom range 已选日期但未点到 Apply")
+    log("[date] 已点 Apply，等待区间生效")
+    await page.wait_for_timeout(800)
 
 
 async def _select_date(page) -> None:
@@ -484,48 +572,56 @@ async def _select_date(page) -> None:
     from_ymd, to_ymd = _ads_file_dates()
     log(f"[date] 选择 {target}（文件名 {from_ymd}..{to_ymd}）")
     await _dismiss_onboarding(page)
-    # 已是目标区间且无引导遮罩 → 跳过重选
-    try:
-        tip_on = False
+    # 已是目标区间且无引导遮罩 → 跳过重选（Custom 仍须按文件名重填）
+    if target != "Custom range":
         try:
-            tip = page.get_by_text(re.compile(r"\d+\s+of\s+\d+", re.I)).first
-            tip_on = await tip.is_visible(timeout=300)
-        except Exception:
             tip_on = False
-        if not tip_on:
-            cur = page.get_by_role("button", name=re.compile(re.escape(target), re.I)).first
-            if await cur.is_visible(timeout=800):
-                txt = (await cur.inner_text() or "").strip().lower()
-                if target.lower() in txt:
-                    log(f"[date] 页面已显示 {target!r}，跳过重选")
-                    return
-    except Exception:
-        pass
+            try:
+                tip = page.get_by_text(re.compile(r"\d+\s+of\s+\d+", re.I)).first
+                tip_on = await tip.is_visible(timeout=300)
+            except Exception:
+                tip_on = False
+            if not tip_on:
+                cur = page.get_by_role(
+                    "button", name=re.compile(re.escape(target), re.I)
+                ).first
+                if await cur.is_visible(timeout=800):
+                    txt = (await cur.inner_text() or "").strip().lower()
+                    if target.lower() in txt:
+                        log(f"[date] 页面已显示 {target!r}，跳过重选")
+                        return
+        except Exception:
+            pass
+    # 先点「当前」区间触发器（Last 30 days 等），勿用 Custom range / combobox（易打到搜索）
+    trigger_sels = [
+        "button:has-text('Last 30 days')",
+        "button:has-text('Last 7 days')",
+        "button:has-text('Last 90 days')",
+        "button:has-text('Yesterday')",
+        "button:has-text('Today')",
+        "button:has-text('Year to Date')",
+        "button:has-text('All time')",
+        "[role=button]:has-text('Last 30 days')",
+        "[role=button]:has-text('Last 7 days')",
+        "[role=button]:has-text('Yesterday')",
+        "text=Last 30 days",
+        "text=Last 7 days",
+        "text=Last 90 days",
+        "text=Yesterday",
+        "text=Today",
+        "[data-testid*='date' i]",
+    ]
+    if target != "Custom range":
+        trigger_sels = [
+            f"button:has-text('{target}')",
+            f"[role=button]:has-text('{target}')",
+            f"text={target}",
+            *trigger_sels,
+        ]
     try:
         await _click_first(
             page,
-            [
-                f"button:has-text('{target}')",
-                f"[role=button]:has-text('{target}')",
-                f"text={target}",
-                "button:has-text('Last 30 days')",
-                "button:has-text('Last 7 days')",
-                "button:has-text('Last 90 days')",
-                "button:has-text('Yesterday')",
-                "button:has-text('Today')",
-                "text=Last 30 days",
-                "text=Last 7 days",
-                "text=Last 90 days",
-                "text=Yesterday",
-                "text=Today",
-                "text=Year to Date",
-                "text=All time",
-                "text=Custom range",
-                f"text={zh}",
-                "[data-testid*='date' i]",
-                "[class*='date' i][role=button]",
-                "role=combobox",
-            ],
+            trigger_sels,
             timeout_ms=5000,
             label="date-trigger",
         )
@@ -536,6 +632,7 @@ async def _select_date(page) -> None:
 
     await page.wait_for_timeout(600)
     await _dismiss_onboarding(page)
+    pick_ok = False
     try:
         await _click_first(
             page,
@@ -545,6 +642,7 @@ async def _select_date(page) -> None:
                 f"li:has-text('{target}')",
                 f"[role='listbox'] >> text={target}",
                 f"[role='menu'] >> text={target}",
+                f"[role='dialog'] >> text={target}",
                 f"button:has-text('{target}')",
                 f"text={target}",
                 f"text={zh}",
@@ -552,9 +650,15 @@ async def _select_date(page) -> None:
             timeout_ms=5000,
             label="date-pick",
         )
+        pick_ok = True
     except Exception as e:
-        # 下拉被弹窗打断时：关遮罩后若当前已是可用区间则直接导出
         await _dismiss_onboarding(page)
+        if target == "Custom range":
+            # Custom 必须点中选项；不能「页面上还有 Last 30」就当成功再去搜栏填日期
+            await _capture_fail_snapshot(page, "DATE", "date-pick", e)
+            raise RuntimeError(
+                f"未能点中 Custom range 选项（勿填搜索栏）: {e}"
+            ) from e
         cur_ok = False
         for label in (target, "Last 7 days", "Last 30 days", "Yesterday"):
             try:
@@ -571,6 +675,8 @@ async def _select_date(page) -> None:
             await _capture_fail_snapshot(page, "DATE", "date-pick", e)
             raise
     if target == "Custom range":
+        if not pick_ok:
+            raise RuntimeError("Custom range 选项未选中")
         await page.wait_for_timeout(400)
         await _fill_custom_range(page, from_ymd, to_ymd)
     await page.wait_for_timeout(2000)
@@ -829,10 +935,51 @@ def _auth_gate_from_diag(d: dict, page_url: str = "") -> bool:
     )
 
 
+# 导出进程内：撞登录墙只自动 OTP 一次，避免死循环发码
+_EXPORT_INPAGE_OTP_TRIED = False
+
+
+async def _try_inpage_otp_for_export(page, *, where: str) -> bool:
+    """
+    导出撞鉴权页：在当前浏览器窗直接无人值守邮箱登录，不关窗、不另起「登录态」链路。
+    成功返回 True（调用方继续导出）；失败返回 False。
+    """
+    global _EXPORT_INPAGE_OTP_TRIED
+    if _EXPORT_INPAGE_OTP_TRIED:
+        return False
+    try:
+        from noon_login_autofill import otp_auto_enabled
+        from session_sync import wait_left_auth
+    except ImportError as e:
+        log(f"[auth] 无法加载无人值守模块: {e}")
+        return False
+    if not otp_auto_enabled():
+        log("[auth] OUTPOST_NOON_OTP_AUTO=0，导出窗内不自动登录")
+        return False
+    _EXPORT_INPAGE_OTP_TRIED = True
+    log(f"[auth] {where}：会话过期，当前窗无人值守邮箱登录（不关窗重启）")
+
+    def _ads_ready(url: str) -> bool:
+        u = (url or "").lower()
+        return "admanager.noon.partners" in u and not _is_auth_gate(url=u)
+
+    waited = await wait_left_auth(
+        page, ready_fn=_ads_ready, label="ads-export-otp", timeout_sec=900
+    )
+    if waited.get("ok"):
+        # 成功才打标，避免外层再开一轮；失败则留给 jobs/ads 统一登录兜底
+        os.environ["OUTPOST_NOON_EXPORT_LOGIN_TRIED"] = "1"
+        log(f"[auth] 窗内登录成功 url={(waited.get('url') or '')[:120]}")
+        return True
+    log(f"[auth] 窗内登录失败: {waited.get('error') or waited}")
+    return False
+
+
 async def _stop_if_auth_gate(page, *, allow_login_page: bool, where: str) -> bool:
     """
-    若当前已在登录/OTP/Google 页：login 流程直接停住；导出流程立刻失败。
-    返回 True 表示已处理（调用方应 return）。
+    若当前已在登录/OTP/Google 页：
+    - login 流程（allow_login_page）：停住导航，返回 True
+    - 导出流程：先尝试当前窗无人值守 OTP；成功则返回 False 继续；失败再抛错
     """
     url_now = ""
     try:
@@ -854,10 +1001,12 @@ async def _stop_if_auth_gate(page, *, allow_login_page: bool, where: str) -> boo
     if allow_login_page:
         log(f"[goto] {where}：落在登录/OTP 页，停止导航以免冲掉验证码 url={(d.get('url') or url_now)[:120]}")
         return True
+    if await _try_inpage_otp_for_export(page, where=where):
+        return False
     raise RuntimeError(
-        "Ad Manager 会话已过期，停在登录/OTP 页。"
-        "请先到 Playwright 工作室「登录态」打开广告后台登录，"
-        "或：cd apps/api/scripts/noon-ads-export-pw && python main.py login"
+        "Ad Manager 会话已过期，停在登录/OTP 页；窗内无人值守登录未成功。"
+        "请到 Playwright 工作室「登录态」一次登录，"
+        "或：cd apps/api/scripts/noon-pw-platform && python main.py ads login"
         f"。url={(d.get('url') or url_now)[:100]}"
     )
 

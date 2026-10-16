@@ -22,8 +22,8 @@ export function promoInboxRoot(): string {
 }
 
 /**
- * 默认驱动：拼好的提示词 + 参考图写到任务目录，并镜像到 inbox。
- * Outpost 只轮询 out/ 回显，不调用 Cursor 官方接口。
+ * 落盘驱动：拼好的提示词 + 参考图写到任务目录，并镜像到 inbox。
+ * 默认链路在落盘后再由 cursor-rpa 键鼠唤起本机 Cursor；亦可单独用 folder 只投递。
  */
 export const folderHandoffDriver: PromoDriver = {
   id: "folder",
@@ -74,7 +74,7 @@ export const folderHandoffDriver: PromoDriver = {
           outDirAbs: payload.outDirAbs,
           promptPathAbs: payload.promptPathAbs,
           instruction:
-            "把 prompt.md + refs 交给任意 Cursor 会话/自动化出图；成品写入 outDirAbs。Outpost 轮询该目录回显。",
+            "本机 RPA 或人工：把 prompt.md + refs 交给 Cursor 出图；成品写入 outDirAbs。Outpost 轮询该目录回显。",
         },
         null,
         2,

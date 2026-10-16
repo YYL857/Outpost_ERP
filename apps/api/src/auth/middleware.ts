@@ -49,9 +49,16 @@ function isTrustedOfficeClient(req: Request): boolean {
   return false;
 }
 
-/** 本机/办公室扩展（约仓陪伴）免登录 */
-function isLocalExtensionApi(path: string): boolean {
-  return path.startsWith("/api/warehouse-booking");
+/**
+ * 本机/办公室扩展免登录：
+ * - 约仓陪伴（warehouse-booking）
+ * - Listing 对手 PDP 采集写入（须在路由里带 username，写入对应用户 inbox）
+ */
+function isLocalExtensionApi(path: string, method: string): boolean {
+  if (path.startsWith("/api/warehouse-booking")) return true;
+  const m = method.toUpperCase();
+  if (m === "POST" && path === "/api/listing/competitor-capture") return true;
+  return false;
 }
 
 export function createAuthMiddleware() {
@@ -61,13 +68,17 @@ export function createAuthMiddleware() {
       next();
       return;
     }
-    if (isLocalExtensionApi(path) && isTrustedOfficeClient(req)) {
-      next();
-      return;
-    }
+    const officeExtOk =
+      isLocalExtensionApi(path, req.method || "GET") &&
+      isTrustedOfficeClient(req);
 
     const token = readSessionToken(req);
     if (!token) {
+      if (officeExtOk) {
+        // 局域网 Listing/约仓扩展：可无会话，由路由用 username 写入对应用户
+        next();
+        return;
+      }
       res.status(401).json({ error: "未登录", code: "UNAUTHORIZED" });
       return;
     }
@@ -80,12 +91,20 @@ export function createAuthMiddleware() {
         });
         return;
       }
+      if (officeExtOk) {
+        next();
+        return;
+      }
       res.status(401).json({ error: "会话已失效，请重新登录", code: "UNAUTHORIZED" });
       return;
     }
     touchSessionActivity(token);
     const record = findUserById(session.userId);
     if (!record) {
+      if (officeExtOk) {
+        next();
+        return;
+      }
       res.status(401).json({ error: "用户不存在", code: "UNAUTHORIZED" });
       return;
     }

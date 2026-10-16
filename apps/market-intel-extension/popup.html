@@ -6,7 +6,7 @@
     <style>
       body {
         font-family: system-ui, sans-serif;
-        width: 300px;
+        width: 320px;
         margin: 12px;
         font-size: 13px;
       }
@@ -15,6 +15,18 @@
         padding: 8px;
         cursor: pointer;
         margin-top: 6px;
+      }
+      label {
+        display: block;
+        font-size: 12px;
+        color: #555;
+        margin-top: 8px;
+      }
+      input[type="text"] {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 6px 8px;
+        margin-top: 4px;
       }
       #msg {
         margin-top: 8px;
@@ -26,12 +38,25 @@
         font-size: 12px;
         margin: 0 0 8px;
       }
+      .row2 {
+        display: flex;
+        gap: 6px;
+      }
+      .row2 button {
+        flex: 1;
+      }
     </style>
   </head>
   <body>
     <p class="hint">
-      类目页→批量进选品池；商详页→盯价（双次同向才告警）。
+      类目页→批量进选品池；商详页→盯价（双次同向才告警）。默认连办公室后端。
     </p>
+    <label for="apiBase">Outpost API 地址</label>
+    <input id="apiBase" type="text" placeholder="http://192.168.1.112:8787" />
+    <div class="row2">
+      <button id="saveApi" type="button">保存地址</button>
+      <button id="ping" type="button">测试连接</button>
+    </div>
     <button id="capture">采集当前页 → 选品池</button>
     <button id="price">采价 → 竞品监控</button>
     <button id="add-only">仅加入监控池（不采价）</button>
@@ -39,4 +64,3 @@
     <script src="popup.js"></script>
   </body>
 </html>
-

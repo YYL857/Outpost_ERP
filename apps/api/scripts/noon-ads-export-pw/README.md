@@ -1,8 +1,10 @@
-# Noon Ads 导出 PoC（Playwright，对齐影刀策略）
+# Noon Ads 导出（Playwright）
 
-目标：用本机持久化 Chromium 复现影刀 `outpost_noon_ads_export` 链路，验证能否脱离影刀 CLI 配额做无限次调试/定时。
+用本机持久化浏览器登录 Ad Manager，导出 Campaigns Overview，规范为 `ads_sku_*.csv` 并投递到各店 `portal-imports`。
 
-## 对齐的官方步骤
+**生产主路径**已是 Playwright（广告页一键导出 / 数据补洞 / `pw-rpa` job `ads` → `python main.py ads ui`）。日常请优先用统一平台目录 [`noon-pw-platform`](../noon-pw-platform/README.md)；本目录为同链路的独立脚本与说明。
+
+## 官方步骤对齐
 
 ```
 admanager.noon.partners → ?project={shop}&tab=campaigns
@@ -42,7 +44,7 @@ $env:OUTPOST_YD_ADS_SHOPS="PRJ482387"; python main.py ui
 ```
 
 持久化 cookie：`D:\outpost-data\browser-profiles\noon-ads-pw\storage_state.json`  
-日志：`D:\YingDao\Logs\ads_export_pw_*.log`
+日志默认：`D:\YingDao\Logs\ads_export_pw_*.log`（历史目录名，可用 `YINGDAO_LOG_DIR` 覆盖）
 
 ## 落盘路径（不要看 Chrome「下载记录」）
 
@@ -54,6 +56,8 @@ Chrome 里若出现一串 UUID，那是浏览器内部临时名，**不是**入�
 | 规范 CSV | `D:\YingDao\Exports\ads\{shopId}\` | `ads_sku_{from}_{to}.csv` |
 | 慧运营入库 | `D:\outpost-data\shops\{shopId}\portal-imports\` | `ads_sku_{from}_{to}.csv` |
 
+前两级是桥接暂存（历史路径名，仅中间件使用）；**看板与补洞只认**各店 `portal-imports`。
+
 两店示例（昨天 = 2026-10-05）：
 
 - `D:\YingDao\Downloads\PRJ482387\PRJ482387_campaigns-export_2026-10-05_2026-10-05.xlsx`
@@ -61,8 +65,6 @@ Chrome 里若出现一串 UUID，那是浏览器内部临时名，**不是**入�
 
 默认用本机 **Google Chrome**（`OUTPOST_ADS_PW_CHANNEL=chrome`）；没有则退回 Chromium。无头易被 Noon 掐，首次请 `login` 有头登录。
 
-## 与影刀关系
+## 桥接
 
-- 落盘/规范 CSV **复用** `D:\YingDao\Flows\_lib\outpost_bridge.py`（与影刀同一口径）
-- 本脚本 **不**调影刀 CLI；调试次数不限
-- **生产主路径已是本脚本**（广告页一键导出 / 数据补洞 → `python main.py ui`）；影刀 `outpost_noon_ads_export` 仅可手工跑，仓库不再调用
+规范 CSV / 投递复用 `D:\YingDao\Flows\_lib\outpost_bridge.py`（历史目录，非产品名）。与 `noon-pw-platform` 同一入库口径。

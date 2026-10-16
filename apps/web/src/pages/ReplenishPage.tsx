@@ -375,7 +375,7 @@ export function ReplenishPage() {
     setBusy(true);
     setError("");
     try {
-      await api.autoSync({ forceIngest: true });
+      await api.syncReplenishStockSales();
       if (view === "workbook") await refreshWorkbook(wbPage);
       else await refresh(page);
     } catch (e) {
@@ -486,6 +486,7 @@ export function ReplenishPage() {
                   type="button"
                   disabled={busy}
                   onClick={() => void syncStockSales()}
+                  title="一次同步：Impex 库存 + Catalog Active Net + 销量 → 重算本地补货表（可售对齐门户 Active Net FBN）"
                 >
                   {busy ? "同步中…" : "重加载库存/销量"}
                 </button>
@@ -518,6 +519,7 @@ export function ReplenishPage() {
                   type="button"
                   disabled={busy}
                   onClick={() => void syncStockSales()}
+                  title="一次同步：Impex 库存 + Catalog Active Net + 销量 → 重算本地补货表（可售对齐门户 Active Net FBN）"
                 >
                   {busy ? "同步中…" : "重加载库存/销量"}
                 </button>
@@ -647,16 +649,16 @@ export function ReplenishPage() {
                   <th className="rep-wb-sticky-product">产品</th>
                   <th title="近90日销量÷3">月均</th>
                   <th title={`月均×${coverMonths}+15`}>需求</th>
-                  <th title="分仓 FBN + supermall，贴近门户 Active Net">
+                  <th title="门户 Active Net（Catalog stock_fbn_net；无则分仓 FBN）">
                     可售
                   </th>
-                  <th title="仅 FBN 仓合计">FBN</th>
+                  <th title="分仓 Impex · 仅 FBN 仓合计">FBN</th>
                   <th title="超商仓合计">supermall</th>
                   <th title="ASN空·装箱明细">在途</th>
                   <th>运输</th>
                   <th>建议补</th>
                   <th>权重</th>
-                  <th style={{ minWidth: 200 }}>标记 / 备注</th>
+                  <th className="rep-wb-sticky-manual">标记 / 备注</th>
                 </tr>
               </thead>
               <tbody>
@@ -728,62 +730,57 @@ export function ReplenishPage() {
                         </strong>
                       </td>
                       <td className="rep-weight">
-                        <span
-                          className="rep-weight-bar"
-                          style={{ width: weightBar(r.salesWeight) }}
-                        />
-                        <em>{fmtNum(r.salesWeight, 2)}</em>
+                        <div className="rep-weight-stack">
+                          <span
+                            className="rep-weight-bar"
+                            style={{ width: weightBar(r.salesWeight) }}
+                          />
+                          <em>{fmtNum(r.salesWeight, 2)}</em>
+                        </div>
                       </td>
-                      <td className="rep-manual">
-                        {isAdmin ? (
-                          <>
-                            <ChevronSelect
-                              value={knownTag ? draft.manualTag : ""}
-                              options={tagOptions}
-                              placeholder="可补（按公式）"
-                              triggerClassName="input rep-manual-select"
-                              onChange={(next) =>
-                                setDraft(
-                                  r.partnerSku,
-                                  { manualTag: next },
-                                  draft,
-                                )
-                              }
-                            />
-                            {!knownTag && draft.manualTag ? (
-                              <div className="rep-offline-hint">
-                                原标记：{draft.manualTag}
-                              </div>
-                            ) : null}
-                            <ClearableInput
-                              className="input rep-manual-note"
-                              placeholder="手写备注（可选）"
-                              value={draft.note}
-                              onChange={(e) =>
-                                setDraft(
-                                  r.partnerSku,
-                                  { note: e.target.value },
-                                  draft,
-                                )
-                              }
-                            />
-                            {dirty ? (
-                              <button
-                                type="button"
-                                className="btn"
-                                disabled={savingSku === r.partnerSku}
-                                onClick={() => void saveManual(r.partnerSku)}
-                              >
-                                {savingSku === r.partnerSku ? "保存中…" : "保存"}
-                              </button>
-                            ) : null}
-                          </>
-                        ) : (
-                          <span className="muted">
-                            {r.manualTag || "—"}
-                            {r.note ? ` · ${r.note}` : ""}
-                          </span>
-                        )}
+                      <td className="rep-manual rep-wb-sticky-manual">
+                        <div className="rep-manual-stack">
+                          <ChevronSelect
+                            value={knownTag ? draft.manualTag : ""}
+                            options={tagOptions}
+                            placeholder="可补（按公式）"
+                            triggerClassName="input rep-manual-select"
+                            onChange={(next) =>
+                              setDraft(
+                                r.partnerSku,
+                                { manualTag: next },
+                                draft,
+                              )
+                            }
+                          />
+                          {!knownTag && draft.manualTag ? (
+                            <div className="rep-offline-hint">
+                              原标记：{draft.manualTag}
+                            </div>
+                          ) : null}
+                          <ClearableInput
+                            className="input rep-manual-note"
+                            placeholder="手写备注（可选）"
+                            value={draft.note}
+                            onChange={(e) =>
+                              setDraft(
+                                r.partnerSku,
+                                { note: e.target.value },
+                                draft,
+                              )
+                            }
+                          />
+                          {dirty ? (
+                            <button
+                              type="button"
+                              className="btn"
+                              disabled={savingSku === r.partnerSku}
+                              onClick={() => void saveManual(r.partnerSku)}
+                            >
+                              {savingSku === r.partnerSku ? "保存中…" : "保存"}
+                            </button>
+                          ) : null}
+                        </div>
                       </td>
                     </tr>
                     );

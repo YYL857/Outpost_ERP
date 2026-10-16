@@ -4,6 +4,7 @@ import { saveState } from "../../data/store.js";
 import { requireAdmin } from "../../auth/middleware.js";
 import { listInbox } from "./inbox.js";
 import { processPendingInbox, pullDomain } from "./pipeline.js";
+import { notifyStockOrCatalogSynced } from "../replenish/after-stock-sync.js";
 import { pushAlert } from "./alerts.js";
 import {
   getLastAssemblySync,
@@ -182,6 +183,8 @@ export function createSyncRouter(getState: () => AppState) {
 
     try {
       await pullDomain(state, domain);
+      const shopId = String(state.store?.id ?? "").trim();
+      if (shopId) notifyStockOrCatalogSynced(shopId, domain);
       res.json({
         data: state.syncJobs.find((j) => j.domain === domain),
         message: `已从 NOON(${state.noon.mode}) 增量拉取 ${domain}`,
@@ -200,9 +203,10 @@ export function createSyncRouter(getState: () => AppState) {
 
   /**
    * 汇总同步：Noon → 影刀广告落盘入库 → 飞书本地域
+   * 日更流水线「同步取数」会调此接口，故任意登录用户可跑（不限超管）
    * body: { skipNoon?, skipAds?, skipFeishu?, forceIngest?, feishuDocIds? }
    */
-  router.post("/assembly-sync", requireAdmin, async (req, res) => {
+  router.post("/assembly-sync", async (req, res) => {
     if (isAssemblySyncRunning()) {
       res.status(409).json({
         error: "汇总同步正在进行中",
@@ -265,8 +269,9 @@ export function createSyncRouter(getState: () => AppState) {
   });
 
   /**
-   * 数据补洞：Noon 按域一次覆盖缺口区间；飞书直拉；缺 ads 触发 Playwright。
-   * body: { shopIds?, skipNoon?, skipFeishu?, skipYingdao?|skipAdsRpa?, maxImpexPerShop?, maxImpexTotal? }
+   * 数据对齐·一键补齐：只扫本地 portal-imports / 店内表 / 已落盘飞书补缺口；
+   * 不自动 Impex / Playwright / 飞书远端拉取；仍缺则 actions 给取数指引。
+   * body: { shopIds?, lookbackDays? }（skipNoon 等旧字段忽略）
    */
   router.post("/data-backfill", requireAdmin, async (req, res) => {
     if (isDataBackfillRunning()) {

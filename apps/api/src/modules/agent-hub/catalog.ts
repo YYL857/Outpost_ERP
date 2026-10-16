@@ -46,6 +46,19 @@ export const ANTI_HALLUCINATION: AntiHallucinationRules = {
  */
 export const AGENT_TOOLS: AgentToolDef[] = [
   {
+    id: "hub.system_map",
+    name: "读取系统骨架卡",
+    kind: "navigate",
+    when: "需要看清项目分层、模块目录、API 挂载、数据根，或编码前定位入口",
+    method: "GET",
+    path: "/api/system-map/agent-preload",
+    required: [],
+    evidenceFields: ["data.principle", "data.markdown"],
+    neverInvent: [],
+    onMiss: "骨架卡不可用时改读仓库 AGENTS.md 与 apps/api/src/index.ts",
+    notes: ["全图 GET /api/system-map；业务单号仍走 wiki-graph"],
+  },
+  {
     id: "hub.preload",
     name: "读取预加载卡",
     kind: "navigate",

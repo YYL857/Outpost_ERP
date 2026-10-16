@@ -89,16 +89,18 @@ description: >-
 重新生成 PDF：在 `apps/api` 下执行  
 `node ../../.cursor/skills/cross-border-listing-images/_build-prompt-pdf.mjs`
 
-## Listing 系统接入（文件夹投递，默认不走 Cursor 官方 API）
+## Listing 系统接入（默认本机键鼠唤起 Cursor，不走官方 API）
 
 - 模块：`apps/api/src/modules/listing/promo/`
-- 默认驱动 `LISTING_PROMO_DRIVER=folder`：拼 prompt+refs → 公司 inbox → 轮询 `out/` 回显
+- 默认驱动 `LISTING_PROMO_DRIVER=rpa`：拼 prompt+refs → 落盘 → **本机键鼠**打开 Cursor、粘贴发送 → 轮询 `out/` 回填
+- 脚本：`apps/api/scripts/listing-promo-cursor-rpa/`（见该目录 README）
+- 每人本机跑 Outpost + 本机已登录的 Cursor；互不共用一台出图机
+- 局域网共享 ERP：下载 `pack.zip`（prompt+refs）→ 本机 Cursor → 上传成品到 `upload-out`
 - Inbox：`.tmp_listing_promo_inbox/{jobId}/`（可用 `LISTING_PROMO_INBOX` 覆盖）
-- 员工**不用登录**；出图端（本机 Cursor / 共享 Worker）只消费 inbox 并写 `out/`
-- 可选 `LISTING_PROMO_DRIVER=sdk`（需密钥，不推荐全公司）
+- 只投递不唤起：`LISTING_PROMO_DRIVER=folder` 或 `LISTING_PROMO_RPA=0`
+- 可选 `LISTING_PROMO_DRIVER=sdk`（需密钥，不推荐）
 
 ## Outpost Listing 系统接入
 
 运行时标准在 `apps/api/src/modules/listing/promo/`（`standards.ts` / `build-prompt.ts`）。  
-Listing 页「宣传图」会拼 prompt + 参考图，经 Cursor SDK 或手动粘贴出图，回填 `listing-drafts/.../promo/{jobId}/out/`。  
-闸门脚本：`cd apps/api && npm run listing-promo:gate`（需 `CURSOR_API_KEY`）。
+Listing 页「宣传图」会拼 prompt + 参考图，唤起本机 Cursor 出图，回填 `listing-drafts/.../promo/{jobId}/out/`。

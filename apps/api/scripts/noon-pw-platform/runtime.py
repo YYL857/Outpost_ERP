@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
 
 _BRIDGE_DIR = Path(r"D:\YingDao\Flows\_lib")
@@ -12,6 +13,54 @@ if str(_BRIDGE_DIR) not in sys.path:
     sys.path.insert(0, str(_BRIDGE_DIR))
 
 import outpost_bridge as bridge  # noqa: E402
+
+
+def kill_stray_profile_browsers(profile: Path) -> int:
+    """
+    杀掉仍占用该 user-data-dir 的孤儿 Chrome（无 --type= 的主进程）。
+    上次 Python 被杀/崩溃时常见：窗还在但无人值守已死，看起来像「卡着等人手登」。
+    """
+    marker = str(profile.resolve()).replace("/", "\\")
+    if os.name != "nt":
+        return 0
+    # PowerShell：只杀主进程，子进程会随主进程退出
+    ps = (
+        "$m = "
+        + repr(marker)
+        + "; "
+        + "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | "
+        + "Where-Object { $_.CommandLine -and $_.CommandLine.Contains($m) "
+        + "-and ($_.CommandLine -notmatch '--type=') } | "
+        + "ForEach-Object { "
+        + "try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop; "
+        + "Write-Output $_.ProcessId } catch {} }"
+    )
+    try:
+        r = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                ps,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+        killed = [x for x in (r.stdout or "").split() if x.isdigit()]
+        if killed:
+            print(
+                f"[runtime] 已清理 profile 孤儿 Chrome pid={','.join(killed)} "
+                f"profile={marker}",
+                flush=True,
+            )
+        return len(killed)
+    except Exception as e:
+        print(f"[runtime] 清理孤儿 Chrome 失败: {e}", flush=True)
+        return 0
 
 LOG_DIR = Path(os.environ.get("YINGDAO_LOG_DIR", r"D:\YingDao\Logs"))
 ADS_PROFILE = Path(
@@ -65,13 +114,21 @@ async def with_browser(
 
     state_path = profile / "storage_state.json"
     profile.mkdir(parents=True, exist_ok=True)
+    # persistent / 同 profile 并发前先清孤儿，否则会互掐成 browser has been closed，
+    # 并留下无人驾驶的 Welcome Back 空窗。
+    kill_stray_profile_browsers(profile)
     channel = pw_channel()
     pw_dl = bridge.DOWNLOAD_DIR
     pw_dl.mkdir(parents=True, exist_ok=True)
     init_script = (
         "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
     )
-    base_args = ["--disable-blink-features=AutomationControlled"]
+    # TranslateUI 会把 Continue with this user 译成中文，导致登录第二态点不中
+    base_args = [
+        "--disable-blink-features=AutomationControlled",
+        "--disable-features=TranslateUI",
+        "--disable-translate",
+    ]
     if extra_args:
         base_args = base_args + list(extra_args)
 
@@ -130,6 +187,9 @@ async def with_browser(
                     await browser.close()
                 except Exception:
                     pass
+            # Windows 上 launch_persistent_context 偶发关不干净，留下无人驾驶登录窗
+            if persist or not state_path.is_file():
+                kill_stray_profile_browsers(profile)
 
 
 async def goto_resilient(page, url: str) -> None:

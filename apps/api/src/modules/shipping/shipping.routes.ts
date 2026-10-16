@@ -5,6 +5,8 @@ import type { AppState } from "../../common/types.js";
 import {
   buildCatalogDisplayMap,
   catalogDisplayOf,
+  hasHan,
+  preferChineseTitle,
 } from "../../common/catalog-display.js";
 import { saveState } from "../../data/store.js";
 import { ingestFeishuOpsIntoState } from "../../platforms/feishu/ingest/ops.js";
@@ -67,6 +69,19 @@ import {
   listCargoHints,
   upsertCargoHint,
 } from "./cargo-hints.js";
+import {
+  clearOutboundPool,
+  listOutboundCargoGaps,
+  listOutboundPoolView,
+  parseArrivalPlanXlsx,
+  replaceOutboundPool,
+} from "./outbound-pool.js";
+import { getRateSamples } from "./rate-samples.js";
+import { loadRouteRules, saveRouteRules } from "./route-rules.js";
+import {
+  getReplenishBatch,
+  listReplenishBatchBriefs,
+} from "../purchase/replenish-batch/index.js";
 import {
   LabelCropError,
   cropAwbLabelPdf,
@@ -156,6 +171,19 @@ export function createShippingOpsRouter(getState: () => AppState) {
     const packingDetail = storePrefixes.length
       ? summarizePackingInTransit(loadLatestPackingLines(), storePrefixes)
       : null;
+    /** PSKU → 飞书/采购中文品名（装箱表名为空或英文时补） */
+    const zhNameBySku = new Map<string, string>();
+    for (const o of state.feishuOpsSnapshots ?? []) {
+      const sku = (o.partnerSku || "").trim();
+      const n = (o.productName || "").trim();
+      if (sku && n && hasHan(n)) zhNameBySku.set(sku, n);
+    }
+    for (const p of state.purchaseLines ?? []) {
+      const sku = (p.partnerSku || "").trim();
+      const n = (p.productName || "").trim();
+      if (!sku || !n || !hasHan(n) || zhNameBySku.has(sku)) continue;
+      zhNameBySku.set(sku, n);
+    }
     const packingInTransitDetail = packingDetail
       ? {
           storePrefixes,
@@ -184,7 +212,12 @@ export function createShippingOpsRouter(getState: () => AppState) {
                 const d = catalogDisplayOf(display, it.partnerSku);
                 return {
                   partnerSku: it.partnerSku,
-                  title: d.title || it.name || it.partnerSku,
+                  title:
+                    preferChineseTitle(
+                      it.name,
+                      zhNameBySku.get(it.partnerSku),
+                      d.title,
+                    ) || it.partnerSku,
                   qty: it.qty,
                 };
               }),
@@ -319,6 +352,186 @@ export function createShippingOpsRouter(getState: () => AppState) {
       });
     } catch (e) {
       res.status(400).json({
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  });
+
+  /** 发货搭配 Phase1：路由规则 */
+  router.get("/route-rules", (_req, res) => {
+    try {
+      res.json({ data: loadRouteRules() });
+    } catch (e) {
+      res.status(500).json({
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  });
+
+  router.put("/route-rules", (req, res) => {
+    try {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const patch: Parameters<typeof saveRouteRules>[0] = {};
+      const strKeys = [
+        "generalForwarder",
+        "sensitiveForwarder",
+        "batteryForwarder",
+        "coffeeForwarder",
+        "bandForwarder",
+        "lampForwarder",
+        "glassesForwarder",
+        "batteryToHanshaSince",
+      ] as const;
+      for (const k of strKeys) {
+        if (body[k] != null) patch[k] = String(body[k]).trim();
+      }
+      if (body.batteryToHansha != null) {
+        patch.batteryToHansha = Boolean(body.batteryToHansha);
+      }
+      const data = saveRouteRules(patch);
+      res.json({ data, message: "路由规则已保存" });
+    } catch (e) {
+      res.status(400).json({
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  });
+
+  /** 待发池 */
+  router.get("/outbound-pool", (_req, res) => {
+    try {
+      res.json({ data: listOutboundPoolView() });
+    } catch (e) {
+      res.status(500).json({
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  });
+
+  router.get("/outbound-pool/gaps", (_req, res) => {
+    try {
+      res.json({
+        data: {
+          gaps: listOutboundCargoGaps(),
+          options: CARGO_KIND_OPTIONS,
+        },
+      });
+    } catch (e) {
+      res.status(500).json({
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  });
+
+  router.post("/outbound-pool/import", (req, res) => {
+    try {
+      const base64 = String(req.body?.base64 ?? "").trim();
+      const filename = String(req.body?.filename ?? "arrival.xlsx").trim();
+      if (!base64) {
+        return res.status(400).json({ error: "需要 base64（xlsx）" });
+      }
+      const buf = Buffer.from(base64, "base64");
+      const parsed = parseArrivalPlanXlsx(buf);
+      if (!parsed.lines.length) {
+        return res.status(400).json({
+          error: parsed.warnings[0] || "未解析到有效行",
+          data: { warnings: parsed.warnings, sheetName: parsed.sheetName },
+        });
+      }
+      const file = replaceOutboundPool(parsed.lines);
+      const view = listOutboundPoolView();
+      res.json({
+        data: {
+          ...view,
+          imported: file.lines.length,
+          sheetName: parsed.sheetName,
+          warnings: parsed.warnings,
+          filename,
+        },
+        message: `已导入 ${file.lines.length} 行（${parsed.sheetName}）`,
+      });
+    } catch (e) {
+      res.status(400).json({
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  });
+
+  router.delete("/outbound-pool", (_req, res) => {
+    try {
+      clearOutboundPool();
+      res.json({
+        data: listOutboundPoolView(),
+        message: "待发池已清空",
+      });
+    } catch (e) {
+      res.status(500).json({
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  });
+
+  /** 票级实付样本 */
+  router.get("/rate-samples", (req, res) => {
+    try {
+      const rebuild =
+        String(req.query.rebuild ?? "") === "1" ||
+        String(req.query.rebuild ?? "") === "true";
+      const data = getRateSamples({ rebuild });
+      res.json({
+        data: {
+          updatedAt: data.updatedAt,
+          sourceNote: data.sourceNote,
+          sampleCount: data.samples.length,
+          rollup: data.rollup,
+          samples: data.samples.slice(0, 80),
+        },
+      });
+    } catch (e) {
+      res.status(500).json({
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  });
+
+  router.post("/rate-samples/rebuild", (_req, res) => {
+    try {
+      const data = getRateSamples({ rebuild: true });
+      res.json({
+        data: {
+          updatedAt: data.updatedAt,
+          sourceNote: data.sourceNote,
+          sampleCount: data.samples.length,
+          rollup: data.rollup,
+        },
+        message: `已重建 ${data.samples.length} 条票级样本`,
+      });
+    } catch (e) {
+      res.status(500).json({
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  });
+
+  /** 采购已下单、近期会到公司的批次（发货人阿沈只读） */
+  router.get("/purchase-arrivals", (_req, res) => {
+    try {
+      res.json({ data: { batches: listReplenishBatchBriefs(20) } });
+    } catch (e) {
+      res.status(500).json({
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  });
+
+  router.get("/purchase-arrivals/:id", (req, res) => {
+    try {
+      const id = String(req.params.id ?? "").trim();
+      const batch = getReplenishBatch(id);
+      if (!batch) return res.status(404).json({ error: "批次不存在" });
+      res.json({ data: { batch } });
+    } catch (e) {
+      res.status(500).json({
         error: e instanceof Error ? e.message : String(e),
       });
     }

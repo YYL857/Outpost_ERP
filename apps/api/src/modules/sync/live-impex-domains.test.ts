@@ -4,12 +4,15 @@ import type { AppState } from "../../common/types.js";
 import {
   applyStockLedgerSnapshot,
   needsCatalogImpexRefresh,
+  needsOrdersCatchUp,
   needsStockImpexRefresh,
   pickLiveImpexDomains,
   pickLivePollDomain,
   prepareStockLedgerSnapshot,
   stockLastImpexAt,
+  stockRefreshStaleMs,
 } from "./live-impex-domains.js";
+import { resolveLagExpectedEnd } from "./gap-audit.js";
 
 function freshStockJobs() {
   const now = new Date().toISOString();
@@ -41,6 +44,8 @@ function baseState(partial: Partial<AppState> & { catalogLen?: number }): AppSta
     partnerSku: `SKU${i}`,
     updatedAt: "2026-09-19T06:42:24.000Z",
   })) as AppState["catalog"];
+  const nowIso = new Date().toISOString();
+  const lagEnd = resolveLagExpectedEnd(new Date());
   return {
     catalog,
     stock: [
@@ -50,16 +55,22 @@ function baseState(partial: Partial<AppState> & { catalogLen?: number }): AppSta
         fulfillment: "fbn",
         qty: 1,
         inTransitQty: 0,
-        updatedAt: new Date().toISOString(),
+        updatedAt: nowIso,
       },
     ] as AppState["stock"],
     salesFacts: [{ partnerSku: "x" }] as AppState["salesFacts"],
     feeSnapshots: [{ partnerSku: "x" }] as AppState["feeSnapshots"],
-    orders: [{ orderNr: "1" }] as AppState["orders"],
+    orders: [
+      {
+        orderNr: "1",
+        placedAt: `${lagEnd}T12:00:00.000Z`,
+        status: "delivered",
+      },
+    ] as AppState["orders"],
     cursors: {
-      ordersSince: null,
+      ordersSince: nowIso,
       catalogSince: null,
-      stockSince: new Date().toISOString(),
+      stockSince: nowIso,
       salesSince: null,
       feesSince: null,
       adsSince: null,
@@ -455,5 +466,62 @@ describe("live-impex-domains", () => {
     assert.equal(state.stock.length, 1);
     assert.equal(state.stock[0]!.qty, 99);
     assert.equal(state.stock[0]!.warehouseCode, "RUH01S");
+  });
+
+  it("stockRefreshStaleMs defaults to 14h", () => {
+    const prev = process.env.OUTPOST_LIVE_STOCK_REFRESH_MS;
+    delete process.env.OUTPOST_LIVE_STOCK_REFRESH_MS;
+    try {
+      assert.equal(stockRefreshStaleMs(), 14 * 60 * 60 * 1000);
+    } finally {
+      if (prev === undefined) delete process.env.OUTPOST_LIVE_STOCK_REFRESH_MS;
+      else process.env.OUTPOST_LIVE_STOCK_REFRESH_MS = prev;
+    }
+  });
+
+  it("orders catch-up when max placedAt behind expectedEnd", () => {
+    const now = new Date();
+    const expected = resolveLagExpectedEnd(now);
+    const state = baseState({
+      orders: [
+        {
+          orderNr: "old",
+          placedAt: "2026-01-01T00:00:00.000Z",
+          status: "delivered",
+        },
+      ],
+      cursors: {
+        ordersSince: now.toISOString(),
+        catalogSince: null,
+        stockSince: now.toISOString(),
+        salesSince: null,
+        feesSince: null,
+        adsSince: null,
+      },
+      syncJobs: freshStockJobs(),
+    } as Partial<AppState>);
+    assert.ok(expected > "2026-01-01");
+    assert.equal(needsOrdersCatchUp(state, now.getTime()), true);
+    assert.equal(pickLivePollDomain(state, 0, now.getTime()), "orders");
+  });
+
+  it("stale stock does not preempt orders catch-up", () => {
+    const now = new Date();
+    const state = baseState({
+      orders: [],
+      syncJobs: freshStockJobs(),
+      cursors: {
+        ordersSince: "2026-01-01T00:00:00.000Z",
+        catalogSince: null,
+        stockSince: "2026-01-01T00:00:00.000Z",
+        salesSince: null,
+        feesSince: null,
+        adsSince: null,
+      },
+    } as Partial<AppState>);
+    assert.equal(needsStockImpexRefresh(state, now.getTime()), true);
+    assert.equal(needsOrdersCatchUp(state, now.getTime()), true);
+    assert.equal(pickLivePollDomain(state, 0, now.getTime()), "orders");
+    assert.equal(pickLiveImpexDomains(state, now.getTime())[0], "orders");
   });
 });

@@ -14,9 +14,10 @@ description: >-
 
 ## 启动顺序
 
-1. `GET /api/agent-hub/manifest`（或磁盘 `D:\outpost-data\agent-hub\manifest.md`）
-2. `GET /api/wiki-graph/agent-preload`（表怎么连）
-3. 按清单选工具；有键先 `wiki.context_pack`
+1. 看框架 / 找模块：`GET /api/system-map/agent-preload`（或 Skill `outpost-system-map` 的 `preload.md`）
+2. 查业务键与金额：`GET /api/wiki-graph/agent-preload`（表怎么连）
+3. `GET /api/agent-hub/manifest`（或磁盘 `D:\outpost-data\agent-hub\manifest.md`）
+4. 按清单选工具；有键先 `wiki.context_pack`
 
 ## 反幻觉（必须）
 
@@ -30,8 +31,9 @@ description: >-
 ## 决策简图
 
 ```
-问题 → preload/manifest
-     → 有键? context_pack
+问题 → 架构? system-map
+     → 业务键? wiki preload → context_pack
+     → 工具? manifest
      → 要数字? catalog/purchase/sales/finance/shipping/replenish
      → 要判断? ops.interpret
      → HubAnswer（带证据）

@@ -10,7 +10,7 @@ import {
   resolveAssignee,
   attachmentAbsPath,
 } from "./access.js";
-import { buildInbox, dismissRejectInbox } from "./inbox.js";
+import { buildInbox, dismissRejectInbox, dismissReviewInbox } from "./inbox.js";
 import {
   ackTask,
   cancelTask,
@@ -309,6 +309,25 @@ export function createTaskPlanningRouter() {
       return;
     }
     const next = dismissRejectInbox(task, user);
+    res.json({ data: next });
+  });
+
+  router.post("/:id/dismiss-review", (req, res) => {
+    const user = (req as AuthedRequest).user;
+    if (!user) {
+      res.status(401).json({ error: "未登录", code: "UNAUTHORIZED" });
+      return;
+    }
+    const task = findTask(String(req.params.id));
+    if (!task || !canViewTask(task, user)) {
+      res.status(404).json({ error: "任务不存在" });
+      return;
+    }
+    if (task.createdBy.id !== user.id) {
+      res.status(403).json({ error: "仅创建者可关闭验收提醒" });
+      return;
+    }
+    const next = dismissReviewInbox(task, user);
     res.json({ data: next });
   });
 

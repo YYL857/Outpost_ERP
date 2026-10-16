@@ -29,6 +29,7 @@ from runtime import (  # noqa: E402
     headless_default,
     with_browser,
 )
+from session_sync import is_auth_gate  # noqa: E402
 from shop_switch import ensure_shop  # noqa: E402
 
 _BRIDGE_DIR = Path(r"D:\YingDao\Flows\_lib")
@@ -123,8 +124,7 @@ async def _export_one(context, page, shop_id: str, from_ymd: str, to_ymd: str) -
         await page.locator("text=Export").first.wait_for(state="visible", timeout=30_000)
     except Exception:
         pass
-    low = (page.url or "").lower()
-    if "login" in low or "sign-in" in low:
+    if is_auth_gate(page.url or ""):
         raise RuntimeError("疑似未登录 Seller Lab。请先 python main.py sales login")
     await ensure_shop(page, sid, kind="sales")
     if sid.lower() not in (page.url or "").lower():
@@ -425,12 +425,32 @@ def main(cmd: str) -> int:
 
         return run_unified_login()
     if cmd == "ui":
+        from session_sync import looks_like_auth_fail, try_recover_session_for_export
+
+        def _run_ui() -> dict:
+            return asyncio.run(cmd_ui())
+
         try:
-            r = asyncio.run(cmd_ui())
-            print(json.dumps(r, ensure_ascii=False, indent=2))
-            return 1 if r.get("errors") else 0
+            r = _run_ui()
         except Exception as e:
             log(f"[fatal] {e}")
-            return 1
+            if looks_like_auth_fail(str(e)) and try_recover_session_for_export(str(e)):
+                try:
+                    r = _run_ui()
+                except Exception as e2:
+                    log(f"[fatal] 重登后仍失败: {e2}")
+                    return 1
+            else:
+                return 1
+        blob = json.dumps(r, ensure_ascii=False)
+        if r.get("errors") and looks_like_auth_fail(blob):
+            if try_recover_session_for_export(blob):
+                try:
+                    r = _run_ui()
+                except Exception as e:
+                    log(f"[fatal] 重登后仍失败: {e}")
+                    return 1
+        print(json.dumps(r, ensure_ascii=False, indent=2))
+        return 1 if r.get("errors") else 0
     log("sales 用法: ui | login")
     return 2

@@ -17,7 +17,10 @@ import {
   listAssignableUsers,
   resolveAssignee,
 } from "../apps/api/src/modules/task-planning/access.js";
-import { buildInbox } from "../apps/api/src/modules/task-planning/inbox.js";
+import {
+  buildInbox,
+  dismissReviewInbox,
+} from "../apps/api/src/modules/task-planning/inbox.js";
 import type { AuthUser } from "../apps/api/src/auth/types.js";
 import { loadUsersRegistry } from "../apps/api/src/auth/users.js";
 
@@ -93,10 +96,26 @@ assert(
   "主管收件箱应有待验收",
 );
 
+task = dismissReviewInbox(task, leadUser);
+assert(task.reviewNotifiedAt, "关闭验收提醒后应记下已读");
+assert(
+  !buildInbox(leadUser).some(
+    (i) => i.taskId === task.id && i.type === "pending_review",
+  ),
+  "已读后待验收不应再进收件箱弹窗",
+);
+
 task = reviewTask(task, leadUser, "reject", "请补充数据");
 assert(task.status === "rejected", "退回后应为 rejected");
 
 task = submitTask(task, opsUser, "已补充");
+assert(!task.reviewNotifiedAt, "再次提交应重置验收已读");
+assert(
+  buildInbox(leadUser).some(
+    (i) => i.taskId === task.id && i.type === "pending_review",
+  ),
+  "再次提交后应重新弹出待验收",
+);
 task = reviewTask(task, leadUser, "approve", "OK");
 assert(task.status === "done", "通过后应为 done");
 

@@ -195,10 +195,6 @@ def main(cmd: str) -> int:
 
     if cmd == "login":
         return run_unified_login()
-    if cmd in ("otp-probe", "otp_probe", "otpprobe"):
-        from otp_login_probe import run_otp_login_probe
-
-        return run_otp_login_probe()
     if cmd == "ui":
         try:
             # 整次软探测硬顶 70s，防止 UI 永远「运行中」
@@ -211,8 +207,5 @@ def main(cmd: str) -> int:
         except Exception as e:
             log(f"[fatal] {e}")
             return 1
-    log(
-        "keepalive 用法: login | ui | otp-probe"
-        "（otp-probe=清登录态后测邮箱 OTP 自动回填）"
-    )
+    log("keepalive 用法: login | ui（邮箱 OTP 自动回填已并入 login / 导出撞墙恢复）")
     return 2

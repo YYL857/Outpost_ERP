@@ -12,6 +12,7 @@ import {
   listEligibleSyncShops,
   pickNextLiveShopRoundRobin,
 } from "./multi-shop-sync.js";
+import { notifyStockOrCatalogSynced } from "../replenish/after-stock-sync.js";
 import { pullDomain } from "./pipeline.js";
 
 /**
@@ -167,6 +168,8 @@ async function tickLiveShop(shopId: string): Promise<{
     liveRotate += 1;
     await pullDomain(state, domain);
     saveShopState(shopId, state);
+    // stock/catalog 成功 → debounce 重算补货表（与日更/按钮共用 after-stock-sync）
+    notifyStockOrCatalogSynced(shopId, domain);
     return {
       ok: true,
       message: `${shopId}: live pull ${domain}${ingestNote}${priceNote}`,

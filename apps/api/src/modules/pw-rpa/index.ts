@@ -12,5 +12,32 @@ export {
   setPwKeepaliveEnabled,
   envPwKeepaliveDefaultEnabled,
 } from "./keepalive-scheduler.js";
-export { startPwExportSchedulers } from "./export-scheduler.js";
+export {
+  startPwExportSchedulers,
+  DEFAULT_EXPORT_SHOP_IDS,
+} from "./export-scheduler.js";
+export {
+  startAdsBudgetScheduler,
+  getAdsBudgetSchedulerStatus,
+  setAdsBudgetScheduleEnabled,
+  stopAdsBudgetScheduler,
+} from "./ads-budget-scheduler.js";
+export {
+  listBaseline,
+  listBudgetProductMeta,
+  patchBaselineRow,
+  upsertBaselineRow,
+  deleteBaselineRow,
+  importBaselineBudgets,
+  loadBaseline,
+  DEFAULT_OFFPEAK_BUDGET,
+  type AdsBudgetBaselineRow,
+  type AdsBudgetProductMeta,
+  type AdsBudgetImportItem,
+  type AdsBudgetImportResult,
+} from "./ads-budget-baseline.js";
+export {
+  listAdsBudgetRuns,
+  type AdsBudgetRunRow,
+} from "./ads-budget-runs.js";
 export { getPwSessionStatus } from "./session-status.js";

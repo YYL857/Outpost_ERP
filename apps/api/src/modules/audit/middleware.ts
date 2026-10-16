@@ -74,7 +74,7 @@ export function createAuditMiddleware() {
       try {
         const authed = req as AuthedRequest;
         const detail = getAuditDetail(req);
-        const actor = detail?.actor ??
+        let actor = detail?.actor ??
           (authed.user
             ? {
                 id: authed.user.id,
@@ -82,6 +82,14 @@ export function createAuditMiddleware() {
                 role: authed.user.role,
               }
             : null);
+        // 约仓扩展免登录：仍须落审计，否则无法追溯 ASN 改写
+        if (!actor?.id && !actor?.username && path.startsWith("/api/warehouse-booking")) {
+          actor = {
+            id: "office-ext",
+            username: "约仓扩展",
+            role: "extension",
+          };
+        }
         if (!actor?.id && !actor?.username) return;
 
         const { module, action } = parseModuleAction(path, req.method);

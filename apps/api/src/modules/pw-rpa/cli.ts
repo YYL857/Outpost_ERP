@@ -16,7 +16,7 @@ import {
 } from "./ads-range.js";
 import { isExportJob, upsertRunLog } from "./run-log.js";
 
-export const PW_JOBS = ["ads", "sales", "keepalive"] as const;
+export const PW_JOBS = ["ads", "sales", "keepalive", "ads-budget"] as const;
 export type PwJobName = (typeof PW_JOBS)[number];
 
 export type PwJobOpts = {
@@ -25,7 +25,12 @@ export type PwJobOpts = {
   days?: number;
   fromDate?: string;
   toDate?: string;
-  cmd?: "ui" | "login" | "probe";
+  cmd?: "ui" | "login" | "probe" | "apply" | "sync";
+  /** ads-budget apply 用：peak / offpeak / auto */
+  mode?: "auto" | "offpeak" | "peak" | "idle";
+  dryRun?: boolean;
+  /** ads-budget sync 时覆盖 baseline */
+  refreshBaseline?: boolean;
   extraEnv?: Record<string, string>;
   trigger?: "manual" | "schedule";
 };
@@ -106,6 +111,10 @@ const HINT: Record<PwJobName, { starting: string; done: string }> = {
     starting: "正在检查 Noon 登录态…",
     done: "登录态检查已完成",
   },
+  "ads-budget": {
+    starting: "正在启动广告预算峰期切换…",
+    done: "广告预算峰期切换已完成",
+  },
 };
 
 export function startPwJob(job: PwJobName, opts: PwJobOpts = {}): PwJobRun {
@@ -150,7 +159,16 @@ export function startPwJob(job: PwJobName, opts: PwJobOpts = {}): PwJobRun {
         .filter(Boolean),
     ),
   ];
-  const cmd = opts.cmd === "login" || opts.cmd === "probe" ? opts.cmd : "ui";
+  const cmdRaw = (opts.cmd || "ui").trim().toLowerCase();
+  let cmd: PwJobOpts["cmd"] = "ui";
+  if (cmdRaw === "login" || cmdRaw === "probe") cmd = cmdRaw;
+  else if (job === "ads-budget" && (cmdRaw === "apply" || cmdRaw === "sync")) {
+    cmd = cmdRaw;
+  } else if (job === "ads-budget" && cmdRaw === "ui") {
+    cmd = "probe";
+  } else {
+    cmd = "ui";
+  }
   let adsResolved: AdsRangeResolved | null = null;
   if ((job === "ads" || job === "sales") && cmd === "ui") {
     try {
@@ -200,6 +218,8 @@ export function startPwJob(job: PwJobName, opts: PwJobOpts = {}): PwJobRun {
       fromDate,
       toDate,
       cmd,
+      mode: opts.mode,
+      dryRun: opts.dryRun,
       trigger,
     },
   };
@@ -214,12 +234,18 @@ export function startPwJob(job: PwJobName, opts: PwJobOpts = {}): PwJobRun {
   };
   if (shopIds.length) {
     env.OUTPOST_YD_ADS_SHOPS = shopIds.join(",");
+    if (job === "ads-budget") {
+      env.OUTPOST_ADS_BUDGET_SHOPS = shopIds.join(",");
+    }
     const want = new Set(shopIds);
     const labels = loadRegistry()
       .shops.filter((s) => want.has(String(s.id || "").trim().toUpperCase()))
       .map((s) => `${String(s.id).trim().toUpperCase()}:${s.name || s.projectCode || s.id}`)
       .join(",");
     if (labels) env.OUTPOST_YD_ADS_SHOP_LABELS = labels;
+  } else if (job === "ads-budget") {
+    env.OUTPOST_ADS_BUDGET_SHOPS =
+      process.env.OUTPOST_ADS_BUDGET_SHOPS?.trim() || "PRJ488078";
   }
   if (job === "ads") {
     env.OUTPOST_YD_ADS_RANGE = range;
@@ -239,7 +265,15 @@ export function startPwJob(job: PwJobName, opts: PwJobOpts = {}): PwJobRun {
     env.OUTPOST_PW_KEEPALIVE_TARGETS = ka;
   }
 
-  const child = spawn(pythonBin(), ["main.py", job, cmd], {
+  const pyArgs = ["main.py", job, cmd || "ui"];
+  if (job === "ads-budget") {
+    if (opts.mode && opts.mode !== "auto") {
+      pyArgs.push("--mode", opts.mode);
+    }
+    if (opts.dryRun) pyArgs.push("--dry-run");
+    if (opts.refreshBaseline) pyArgs.push("--refresh-baseline");
+  }
+  const child = spawn(pythonBin(), pyArgs, {
     cwd: dir,
     windowsHide: true,
     stdio: ["ignore", "pipe", "pipe"],

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { api, onSessionReplaced, type AuthUserPublic, type ShopInfo } from "./api";
 import { Sidebar } from "./layout/Sidebar";
@@ -15,7 +15,6 @@ import { NoonPage } from "./pages/NoonPage";
 import { SyncHealthPage } from "./pages/SyncHealthPage";
 import { CatalogPage } from "./pages/CatalogPage";
 import { ListingPage } from "./pages/ListingPage";
-import { InfoCheckPage } from "./pages/InfoCheckPage";
 import { SalesPage } from "./pages/SalesPage";
 import { BestSellPage } from "./pages/BestSellPage";
 import { FinancePage } from "./pages/FinancePage";
@@ -66,7 +65,6 @@ const READY_PAGES: Partial<Record<ModuleKey, React.ReactNode>> = {
   "noon-guide": <NoonGuidePage />,
   catalog: <CatalogPage />,
   listing: <ListingPage />,
-  "info-check": <InfoCheckPage />,
   sales: <SalesPage />,
   "best-sell": <BestSellPage />,
   finance: <FinancePage />,
@@ -101,6 +99,7 @@ export default function App() {
   const [focusTaskId, setFocusTaskId] = useState<string | null>(null);
   const [showInboxModal, setShowInboxModal] = useState(true);
   const [sessionNotice, setSessionNotice] = useState("");
+  const inboxKnownIdsRef = useRef(new Set<string>());
 
   useEffect(() => {
     return onSessionReplaced((message) => {
@@ -108,6 +107,7 @@ export default function App() {
       setUser(null);
       setShops([]);
       setTaskInbox([]);
+      inboxKnownIdsRef.current = new Set();
       window.alert(message);
     });
   }, []);
@@ -157,17 +157,26 @@ export default function App() {
 
   useEffect(() => {
     if (!user) return;
+    inboxKnownIdsRef.current = new Set();
+    let primed = false;
     const tick = () => {
       api
         .getTaskInbox()
         .then((res) => {
-          setTaskInbox(res.data.items);
+          const items = res.data.items;
+          const known = inboxKnownIdsRef.current;
+          const hasNew = items.some((i) => !known.has(i.id));
+          inboxKnownIdsRef.current = new Set(items.map((i) => i.id));
+          setTaskInbox(items);
           setInboxIndex((i) =>
-            res.data.items.length === 0
-              ? 0
-              : Math.min(i, res.data.items.length - 1),
+            items.length === 0 ? 0 : Math.min(i, items.length - 1),
           );
-          if (res.data.items.length > 0) setShowInboxModal(true);
+          // 首次有数据、或后续出现新提醒时才自动弹；已关掉的不会每 15s 再弹
+          if (items.length > 0 && (!primed || hasNew)) {
+            setShowInboxModal(true);
+          }
+          primed = true;
+          if (items.length === 0) setShowInboxModal(false);
         })
         .catch((e) => {
           if (isAuthLost(e)) setUser(null);
@@ -252,6 +261,7 @@ export default function App() {
     setUser(null);
     setShops([]);
     setTaskInbox([]);
+    inboxKnownIdsRef.current = new Set();
     navigate("/");
   }
 
@@ -267,9 +277,11 @@ export default function App() {
 
   async function refreshInbox() {
     const res = await api.getTaskInbox();
-    setTaskInbox(res.data.items);
+    const items = res.data.items;
+    inboxKnownIdsRef.current = new Set(items.map((i) => i.id));
+    setTaskInbox(items);
     setInboxIndex(0);
-    if (res.data.items.length === 0) setShowInboxModal(false);
+    if (items.length === 0) setShowInboxModal(false);
   }
 
   async function handleInboxAck() {
@@ -299,8 +311,34 @@ export default function App() {
     }
   }
 
-  function handleInboxGo() {
+  async function handleInboxDismissReview() {
     if (!inboxItem) return;
+    setInboxBusy(true);
+    try {
+      await api.dismissTaskReview(inboxItem.taskId);
+      await refreshInbox();
+    } catch (e) {
+      alertIfNeeded(e, "操作失败");
+    } finally {
+      setInboxBusy(false);
+    }
+  }
+
+  async function handleInboxGo() {
+    if (!inboxItem) return;
+    if (inboxItem.type === "pending_review") {
+      setInboxBusy(true);
+      try {
+        await api.dismissTaskReview(inboxItem.taskId);
+        openTasksModule(inboxItem.taskId);
+        await refreshInbox();
+      } catch (e) {
+        alertIfNeeded(e, "操作失败");
+      } finally {
+        setInboxBusy(false);
+      }
+      return;
+    }
     openTasksModule(inboxItem.taskId);
     setShowInboxModal(false);
   }
@@ -441,6 +479,7 @@ export default function App() {
           onAck={handleInboxAck}
           onGo={handleInboxGo}
           onDismissReject={handleInboxDismissReject}
+          onDismissReview={handleInboxDismissReview}
           onSkip={handleInboxSkip}
         />
       )}

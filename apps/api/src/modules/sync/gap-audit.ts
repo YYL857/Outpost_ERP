@@ -318,7 +318,8 @@ export function auditShopGaps(
   const snapshotExpectedEnd = resolveSnapshotExpectedEnd(now);
   const lookback = Math.max(7, Math.min(180, opts.lookbackDays ?? 90));
   const windowStart = addDaysYmd(lagExpectedEnd, -(lookback - 1));
-  const stockStaleMs = opts.stockStaleMs ?? 6 * 60 * 60 * 1000;
+  /** 与 live stock 安全网默认 14h 对齐（日更两次 + 缓冲） */
+  const stockStaleMs = opts.stockStaleMs ?? 14 * 60 * 60 * 1000;
   const catalogStaleMs = opts.catalogStaleMs ?? 12 * 60 * 60 * 1000;
   const nowMs = now.getTime();
 

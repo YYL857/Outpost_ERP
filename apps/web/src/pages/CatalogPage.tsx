@@ -15,6 +15,7 @@ import {
   DataFreshnessBanner,
   useIsAdmin,
 } from "../components/DataFreshnessBanner";
+import { copyText } from "../lib/clipboard";
 
 const PAGE_SIZE = 50;
 
@@ -44,16 +45,6 @@ function money(n: number | null | undefined, suffix = "") {
   if (n == null) return "—";
   const s = Number.isInteger(n) ? String(n) : n.toFixed(2);
   return suffix ? `${s} ${suffix}` : s;
-}
-
-async function copyText(text: string) {
-  const t = text.trim();
-  if (!t) return;
-  try {
-    await navigator.clipboard.writeText(t);
-  } catch {
-    /* ignore */
-  }
 }
 
 function CopyId({ label, value }: { label: string; value: string }) {

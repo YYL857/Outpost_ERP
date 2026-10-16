@@ -3,6 +3,7 @@ import { Router } from "express";
 import type { AppState } from "../../common/types.js";
 import { saveState } from "../../data/store.js";
 import { requireAdmin } from "../../auth/middleware.js";
+import { setAuditDetail } from "../audit/detail.js";
 import { parsePageQuery, slicePage } from "../../common/page-query.js";
 import {
   clearCatalogAssembleCache,
@@ -17,10 +18,20 @@ import {
 } from "../../platforms/feishu/index.js";
 import { isFeishuError } from "../../platforms/feishu/errors.js";
 import { loadRegistry } from "../../shops/registry.js";
+import {
+  getShopState,
+  runAsShopAsync,
+  saveShopState,
+} from "../../shops/state-cache.js";
+import { pullDomain } from "../sync/pipeline.js";
 import { findShopPreset } from "../warehouse-booking/pack-ticket.js";
 import { lineStatus } from "./ship-plan/service.js";
 import * as shipPlan from "./ship-plan/service.js";
 import * as workbook from "./workbook/service.js";
+import {
+  cancelDebouncedReplenishRebuild,
+  rebuildReplenishAfterStockSync,
+} from "./after-stock-sync.js";
 
 /** 显式 prefix 优先；否则按当前店 projectCode 反查 N1/N2… */
 function resolveWorkbookPrefix(
@@ -107,7 +118,8 @@ export function createReplenishRouter(getState: () => AppState) {
     res.json({ data: workbook.listWorkbookBrief() });
   });
 
-  router.post("/workbook/manual", requireAdmin, (req, res) => {
+  /** 标记/备注：登录用户均可改（日常补货操作）；重算/同步仍要超管 */
+  router.post("/workbook/manual", (req, res) => {
     try {
       const prefix = String(req.body?.prefix ?? "").trim().toUpperCase();
       const partnerSku = String(req.body?.partnerSku ?? "").trim();
@@ -116,14 +128,30 @@ export function createReplenishRouter(getState: () => AppState) {
       }
       const hasTag = Object.prototype.hasOwnProperty.call(req.body ?? {}, "manualTag");
       const hasNote = Object.prototype.hasOwnProperty.call(req.body ?? {}, "note");
+      const manualTag = hasTag ? String(req.body.manualTag ?? "").trim() : undefined;
+      const note = hasNote ? String(req.body.note ?? "").trim() : undefined;
       const doc = workbook.patchWorkbookManual({
         shopPrefix: prefix,
         partnerSku,
-        manualTag: hasTag ? String(req.body.manualTag ?? "") : undefined,
-        note: hasNote ? String(req.body.note ?? "") : undefined,
+        manualTag,
+        note,
         coverMonths: workbook.clampCoverMonths(req.body?.coverMonths),
       });
       const row = doc.rows.find((r) => r.partnerSku === partnerSku) ?? null;
+      const tagLabel = (row?.manualTag || "").trim() || "按公式";
+      const noteLabel = (row?.note || "").trim();
+      setAuditDetail(req, {
+        summary: noteLabel
+          ? `补货标记 ${partnerSku} → ${tagLabel}；备注 ${noteLabel}`
+          : `补货标记 ${partnerSku} → ${tagLabel}`,
+        entityType: "replenishManual",
+        entityId: partnerSku,
+        detail: {
+          prefix,
+          manualTag: row?.manualTag ?? "",
+          note: row?.note ?? "",
+        },
+      });
       res.json({
         data: { meta: doc.meta, row },
         message: `已更新 ${partnerSku} 并回写 ${doc.meta.filePath}`,
@@ -143,6 +171,20 @@ export function createReplenishRouter(getState: () => AppState) {
         : undefined;
       const coverMonths = workbook.clampCoverMonths(req.body?.coverMonths);
       const result = workbook.rebuildWorkbooks({ prefixes, coverMonths });
+      const shopList = result.docs
+        .map((d) => d.meta.shopPrefix)
+        .filter(Boolean)
+        .join(",");
+      setAuditDetail(req, {
+        summary: `重算补货表 ${result.docs.length} 店${shopList ? `（${shopList}）` : ""} · 备货${coverMonths}月`,
+        entityType: "replenishWorkbook",
+        entityId: shopList || "all",
+        detail: {
+          coverMonths,
+          prefixes: prefixes ?? null,
+          dir: result.dir,
+        },
+      });
       res.json({
         data: {
           generatedAt: result.generatedAt,
@@ -160,6 +202,80 @@ export function createReplenishRouter(getState: () => AppState) {
     } catch (e) {
       res.status(500).json({
         error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  });
+
+  /**
+   * 重加载库存/销量：Impex stock + catalog（Active Net）+ sales → 重算补货本地表。
+   * body: { skipSales?: boolean }
+   */
+  router.post("/sync-stock-sales", requireAdmin, async (req, res) => {
+    const state0 = getState();
+    const reg = loadRegistry();
+    const shop =
+      reg.shops.find((s) => s.id === state0.store?.id) ??
+      reg.shops.find((s) => s.projectCode === state0.store?.account) ??
+      reg.shops[0];
+    if (!shop) {
+      res.status(400).json({ error: "无当前店铺" });
+      return;
+    }
+    const skipSales = Boolean(req.body?.skipSales);
+    const pulled: string[] = [];
+    const errors: string[] = [];
+    try {
+      await runAsShopAsync(shop.id, async () => {
+        const st = getShopState(shop.id);
+        if (!st.noon.enabled) {
+          throw new Error("NOON 未启用");
+        }
+        const domains: Array<"stock" | "catalog" | "sales"> = [
+          "stock",
+          "catalog",
+        ];
+        if (!skipSales) domains.push("sales");
+        for (const domain of domains) {
+          try {
+            await pullDomain(st, domain);
+            pulled.push(domain);
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            errors.push(`${domain}: ${msg.slice(0, 160)}`);
+            if (domain === "stock") throw e;
+          }
+        }
+        saveShopState(shop.id, st);
+      });
+      cancelDebouncedReplenishRebuild(shop.id);
+      const wb = rebuildReplenishAfterStockSync(shop.id);
+      setAuditDetail(req, {
+        summary: `补货同步库存销量 ${shop.id}（${pulled.join("+") || "无"}）${
+          errors.length ? `；部分失败 ${errors.length}` : ""
+        }`,
+        entityType: "replenishSync",
+        entityId: shop.id,
+        detail: { pulled, errors, workbookOk: wb.ok },
+      });
+      res.status(errors.length && pulled.includes("stock") ? 207 : 200).json({
+        data: {
+          shopId: shop.id,
+          pulled,
+          errors,
+          workbook: wb,
+        },
+        message: `已同步 ${pulled.join("+")} → ${wb.message}`,
+      });
+    } catch (e) {
+      setAuditDetail(req, {
+        summary: `补货同步库存销量失败 ${shop.id}`,
+        entityType: "replenishSync",
+        entityId: shop.id,
+        detail: { pulled, errors },
+      });
+      res.status(500).json({
+        error: e instanceof Error ? e.message : String(e),
+        data: { shopId: shop.id, pulled, errors },
       });
     }
   });
@@ -410,6 +526,22 @@ export function createReplenishRouter(getState: () => AppState) {
         name,
         replaceId,
       });
+      setAuditDetail(req, {
+        summary: `导入发货计划 ${result.doc.id} · ${result.summary.lineCount} 行（纳入 ${result.summary.includeCount}）`,
+        entityType: "shipPlan",
+        entityId: result.doc.id,
+        body: {
+          filename,
+          name: name ?? null,
+          replaceId: replaceId ?? null,
+          lineCount: result.summary.lineCount,
+        },
+        detail: {
+          includeCount: result.summary.includeCount,
+          skipCount: result.summary.skipCount,
+          warningCount: result.warnings?.length ?? 0,
+        },
+      });
       res.json({
         data: {
           id: result.doc.id,
@@ -465,26 +597,47 @@ export function createReplenishRouter(getState: () => AppState) {
   });
 
   router.delete("/ship-plans/:id", requireAdmin, (req, res) => {
-    const ok = shipPlan.removePlan(String(req.params.id));
+    const planId = String(req.params.id);
+    const ok = shipPlan.removePlan(planId);
     if (!ok) {
       res.status(404).json({ error: "计划不存在" });
       return;
     }
+    setAuditDetail(req, {
+      summary: `删除发货计划 ${planId}`,
+      entityType: "shipPlan",
+      entityId: planId,
+    });
     res.json({ data: { deleted: true } });
   });
 
   router.patch("/ship-plans/:id/lines/:lineId", (req, res) => {
     try {
-      const doc = shipPlan.patchLine(
-        String(req.params.id),
-        String(req.params.lineId),
-        {
-          include: req.body?.include,
-          note: req.body?.note,
-          planDate: req.body?.planDate,
-          productName: req.body?.productName,
+      const planId = String(req.params.id);
+      const lineId = String(req.params.lineId);
+      const doc = shipPlan.patchLine(planId, lineId, {
+        include: req.body?.include,
+        note: req.body?.note,
+        planDate: req.body?.planDate,
+        productName: req.body?.productName,
+      });
+      const line = doc.lines.find((l) => l.id === lineId);
+      setAuditDetail(req, {
+        summary: `发货计划行 ${line?.partnerSku || lineId}${
+          req.body?.include === false
+            ? " → 排除"
+            : req.body?.include === true
+              ? " → 纳入"
+              : " 已更新"
+        }`,
+        entityType: "shipPlanLine",
+        entityId: `${planId}:${lineId}`,
+        detail: {
+          partnerSku: line?.partnerSku ?? null,
+          include: line?.include ?? null,
+          note: line?.note ?? null,
         },
-      );
+      });
       res.json({ data: { doc, summary: shipPlan.summarizePlan(doc) } });
     } catch (e) {
       res.status(400).json({
@@ -495,19 +648,29 @@ export function createReplenishRouter(getState: () => AppState) {
 
   router.put("/ship-plans/:id/lines/:lineId/legs", (req, res) => {
     try {
-      const { doc, leg } = shipPlan.upsertLeg(
-        String(req.params.id),
-        String(req.params.lineId),
-        {
-          legId: req.body?.legId,
-          forwarder: req.body?.forwarder,
-          mode: req.body?.mode,
-          qty: req.body?.qty,
-          note: req.body?.note,
-          cargoKind: req.body?.cargoKind,
-          status: req.body?.status,
+      const planId = String(req.params.id);
+      const lineId = String(req.params.lineId);
+      const { doc, leg } = shipPlan.upsertLeg(planId, lineId, {
+        legId: req.body?.legId,
+        forwarder: req.body?.forwarder,
+        mode: req.body?.mode,
+        qty: req.body?.qty,
+        note: req.body?.note,
+        cargoKind: req.body?.cargoKind,
+        status: req.body?.status,
+      });
+      const line = doc.lines.find((l) => l.id === lineId);
+      setAuditDetail(req, {
+        summary: `发货腿 ${line?.partnerSku || lineId} · ${leg.forwarder || "货代"} ${leg.mode || ""} ×${leg.qty ?? "?"}`,
+        entityType: "shipPlanLeg",
+        entityId: `${planId}:${lineId}:${leg.id}`,
+        detail: {
+          partnerSku: line?.partnerSku ?? null,
+          forwarder: leg.forwarder ?? null,
+          mode: leg.mode ?? null,
+          qty: leg.qty ?? null,
         },
-      );
+      });
       res.json({
         data: {
           leg,
@@ -525,12 +688,22 @@ export function createReplenishRouter(getState: () => AppState) {
 
   router.post("/ship-plans/:id/lines/:lineId/legs/:legId/ship", (req, res) => {
     try {
-      const result = shipPlan.recordShipment(
-        String(req.params.id),
-        String(req.params.lineId),
-        String(req.params.legId),
-        Number(req.body?.qty),
-      );
+      const planId = String(req.params.id);
+      const lineId = String(req.params.lineId);
+      const legId = String(req.params.legId);
+      const qty = Number(req.body?.qty);
+      const result = shipPlan.recordShipment(planId, lineId, legId, qty);
+      const line = result.doc.lines.find((l) => l.id === lineId);
+      setAuditDetail(req, {
+        summary: `登记发出 ${line?.partnerSku || lineId} ×${qty}（腿剩 ${result.remaining}）`,
+        entityType: "shipPlanShip",
+        entityId: `${planId}:${lineId}:${legId}`,
+        detail: {
+          partnerSku: line?.partnerSku ?? null,
+          qty,
+          remaining: result.remaining,
+        },
+      });
       res.json({
         data: {
           leg: result.leg,
@@ -551,11 +724,15 @@ export function createReplenishRouter(getState: () => AppState) {
 
   router.post("/ship-plans/:id/cargo-gaps", (req, res) => {
     try {
+      const planId = String(req.params.id);
       const items = Array.isArray(req.body?.items) ? req.body.items : [];
-      const { updated, doc } = shipPlan.fillCargoGaps(
-        String(req.params.id),
-        items,
-      );
+      const { updated, doc } = shipPlan.fillCargoGaps(planId, items);
+      setAuditDetail(req, {
+        summary: `发货计划货性补全 ${updated} 条`,
+        entityType: "shipPlan",
+        entityId: planId,
+        detail: { updated },
+      });
       res.json({
         data: {
           updated,

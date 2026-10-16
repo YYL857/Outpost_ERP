@@ -59,8 +59,8 @@ export type PromoJob = {
   brief: PromoBrief;
   agentId?: string;
   runId?: string;
-  /** folder=投递箱+轮询（默认）；sdk=可选官方接口 */
-  driverMode?: "folder" | "sdk" | "manual";
+  /** rpa=落盘+本机键鼠唤起 Cursor（默认）；folder=只投递；sdk=可选官方接口 */
+  driverMode?: "folder" | "sdk" | "manual" | "rpa";
   images: PromoImage[];
   userFeedback: PromoFeedback[];
   error?: string | null;

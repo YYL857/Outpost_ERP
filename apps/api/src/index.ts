@@ -16,6 +16,7 @@ import { createAdsRouter } from "./modules/ads/ads.routes.js";
 import {
   createPwRpaRouter,
   startPwExportSchedulers,
+  startAdsBudgetScheduler,
 } from "./modules/pw-rpa/index.js";
 import { createPurchaseRouter } from "./modules/purchase/purchase.routes.js";
 import { createReplenishRouter } from "./modules/replenish/replenish.routes.js";
@@ -35,6 +36,7 @@ import {
 } from "./modules/morning-digest/index.js";
 import { createOpsAssistRouter } from "./modules/ops-assist/ops-assist.routes.js";
 import { createWikiGraphRouter } from "./modules/wiki-graph/index.js";
+import { createSystemMapRouter } from "./modules/system-map/index.js";
 import { createAgentHubRouter } from "./modules/agent-hub/index.js";
 import { createDashboardRouter } from "./modules/dashboard/index.js";
 import { createShopsRouter } from "./shops/shops.routes.js";
@@ -45,6 +47,10 @@ import {
 } from "./shops/state-cache.js";
 import { startNoonPoller } from "./modules/sync/poller.js";
 import { startAssemblySyncScheduler } from "./modules/sync/assembly-scheduler.js";
+import {
+  envStockScheduleDefaultEnabled,
+  startStockScheduler,
+} from "./modules/sync/stock-scheduler.js";
 import { scheduleBootDataBackfill } from "./modules/sync/data-backfill.js";
 import {
   createSchedulersRouter,
@@ -53,9 +59,9 @@ import {
 import { startGpCloseScheduler } from "./modules/finance/gp-close-scheduler.js";
 import { createTaskPlanningRouter } from "./modules/task-planning/index.js";
 import { createWarehouseBookingRouter } from "./modules/warehouse-booking/index.js";
-import { createInfoCheckRouter } from "./modules/info-check/index.js";
 import { createCargoLedgerRouter } from "./modules/cargo-ledger/index.js";
 import { createOpsDailyRouter } from "./modules/ops-daily/index.js";
+import { createExtensionsRouter } from "./modules/extensions/extensions.routes.js";
 import {
   bootstrapAuth,
   createAuthMiddleware,
@@ -123,13 +129,14 @@ app.use("/api/morning-digest", createMorningDigestRouter(boundGetState));
 app.use("/api/ops-assist", createOpsAssistRouter(boundGetState));
 app.use("/api/dashboard", createDashboardRouter(boundGetState));
 app.use("/api/wiki-graph", createWikiGraphRouter());
+app.use("/api/system-map", createSystemMapRouter());
 app.use("/api/agent-hub", createAgentHubRouter());
 app.use("/api/schedulers", createSchedulersRouter(boundGetState));
 app.use("/api/tasks", createTaskPlanningRouter());
 app.use("/api/warehouse-booking", createWarehouseBookingRouter());
-app.use("/api/info-check", createInfoCheckRouter());
 app.use("/api/cargo-ledger", createCargoLedgerRouter());
 app.use("/api/ops-daily", createOpsDailyRouter());
+app.use("/api/extensions", createExtensionsRouter());
 
 app.get("/api/ready", (_req, res) => {
   const s = boundGetState();
@@ -186,7 +193,11 @@ startAssemblySyncScheduler(boundGetState, {
   enabled: resolveBootEnabled("assembly-sync"),
   respectOnBoot: true,
 });
+startStockScheduler({
+  enabled: envStockScheduleDefaultEnabled(),
+});
 startPwExportSchedulers();
+startAdsBudgetScheduler();
 
 startMorningDigestScheduler(boundGetState, {
   storeEnabled: resolveBootEnabled("store-morning-digest"),

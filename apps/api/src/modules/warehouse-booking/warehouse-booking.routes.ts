@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { isFeishuError } from "../../platforms/feishu/errors.js";
+import { setAuditDetail } from "../audit/detail.js";
 import {
   loadAsnCapture,
   patchAsnCapture,
@@ -92,10 +93,21 @@ export function createWarehouseBookingRouter(): Router {
         parsed.data.scheduleSlot !== undefined
           ? normalizeScheduleSlot(parsed.data.scheduleSlot)
           : undefined;
-      const stored = patchAsnCapture(String(req.params.asnId), {
+      const asnId = String(req.params.asnId);
+      const stored = patchAsnCapture(asnId, {
         ...parsed.data,
         scheduleSlot: slot,
         source: "manual",
+      });
+      setAuditDetail(req, {
+        summary: `约仓记忆 ${asnId} → ${stored.warehouse || "?"} ${stored.scheduledDate || ""} ${stored.scheduleSlot || ""}`,
+        entityType: "warehouseCapture",
+        entityId: asnId,
+        detail: {
+          warehouse: stored.warehouse,
+          scheduledDate: stored.scheduledDate,
+          scheduleSlot: stored.scheduleSlot,
+        },
       });
       let session = parsed.data.sessionId
         ? loadSession(parsed.data.sessionId)
@@ -157,6 +169,11 @@ export function createWarehouseBookingRouter(): Router {
     }
     try {
       const session = createSession(parsed.data.ticketPrefix);
+      setAuditDetail(req, {
+        summary: `约仓会话新建 · 票前缀 ${parsed.data.ticketPrefix}`,
+        entityType: "warehouseSession",
+        entityId: session.id,
+      });
       ok(res, { session });
     } catch (e) {
       fail(res, 400, e instanceof Error ? e.message : String(e));
@@ -214,12 +231,24 @@ export function createWarehouseBookingRouter(): Router {
       return;
     }
     try {
-      const session = updateSessionCapture(String(req.params.id), {
+      const sessionId = String(req.params.id);
+      const session = updateSessionCapture(sessionId, {
         ...parsed.data,
         scheduleSlot:
           parsed.data.scheduleSlot !== undefined
             ? normalizeScheduleSlot(parsed.data.scheduleSlot)
             : undefined,
+      });
+      const cap = session.capture;
+      setAuditDetail(req, {
+        summary: `约仓会话改结果 ${cap?.asnId || sessionId} → ${cap?.warehouse || "?"} ${cap?.scheduledDate || ""}`,
+        entityType: "warehouseSession",
+        entityId: sessionId,
+        detail: {
+          asnId: cap?.asnId ?? null,
+          warehouse: cap?.warehouse ?? null,
+          scheduledDate: cap?.scheduledDate ?? null,
+        },
       });
       ok(res, {
         session,
@@ -273,6 +302,15 @@ export function createWarehouseBookingRouter(): Router {
           };
         }
       }
+      setAuditDetail(req, {
+        summary: `约仓采集 ${parsed.data.asnId} → ${parsed.data.warehouse || "?"} ${parsed.data.scheduledDate} ${parsed.data.scheduleSlot}`,
+        entityType: "warehouseCapture",
+        entityId: parsed.data.asnId,
+        detail: {
+          source: parsed.data.source ?? "extension",
+          syncPackingSheet: parsed.data.syncPackingSheet === true,
+        },
+      });
       ok(res, {
         session: result.session,
         capture: result.capture,
@@ -314,6 +352,17 @@ export function createWarehouseBookingRouter(): Router {
       return;
     }
     try {
+      setAuditDetail(req, {
+        summary: `约仓回填装箱表 · 会话 ${session.id}${
+          session.capture?.asnId ? ` ASN ${session.capture.asnId}` : ""
+        }${parsed.data.dryRun ? "（dryRun）" : ""}`,
+        entityType: "warehouseSession",
+        entityId: session.id,
+        detail: {
+          asnId: session.capture?.asnId ?? null,
+          dryRun: Boolean(parsed.data.dryRun),
+        },
+      });
       const packingSync = await syncBookingCaptureToPackingSheet(session, {
         shopPrefix: parsed.data.shopPrefix,
         dryRun: parsed.data.dryRun,

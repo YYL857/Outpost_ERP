@@ -48,3 +48,20 @@ export function catalogDisplayOf(
     noonSku: hit?.noonSku,
   };
 }
+
+export function hasHan(s: string): boolean {
+  return /[\u4e00-\u9fff]/.test(s);
+}
+
+/**
+ * 运营展示品名：优先含汉字的候选（装箱表/飞书/采购），否则取第一个非空。
+ * Catalog 站内标题多为英文，不宜压过中文采购名。
+ */
+export function preferChineseTitle(
+  ...candidates: Array<string | null | undefined>
+): string {
+  const cleaned = candidates
+    .map((c) => (c ?? "").trim())
+    .filter(Boolean);
+  return cleaned.find(hasHan) ?? cleaned[0] ?? "";
+}

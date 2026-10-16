@@ -12,8 +12,10 @@ import {
   type SkuChannelHistory,
 } from "../api";
 import { ClearableInput } from "../components/ClearableInput";
+import { ExtensionDownloadBtn } from "../components/ExtensionDownloadBtn";
 import { ProductCell } from "../components/ProductCell";
 import { filterProductDisplayRows } from "../lib/product-display";
+import { OutboundPackPanel } from "./OutboundPackPanel";
 
 /** 货代查轨迹链路（与店铺切换同款下拉；未就绪的标 disabled）
  * splitShipMode=true：海运/空运查询入口不同，UI 需选运输方式
@@ -255,6 +257,7 @@ export function ShippingOpsPage() {
   const [feishuQuery, setFeishuQuery] = useState("");
   const [noonQuery, setNoonQuery] = useState("");
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [trackPortalId, setTrackPortalId] = useState<TrackPortalId>(loadTrackPortal);
   const [shipMode, setShipMode] = useState<ShipModeChoice>(loadShipMode);
@@ -292,14 +295,20 @@ export function ShippingOpsPage() {
   }, [shipMode]);
 
   async function refresh() {
-    const [overview, channels, hints] = await Promise.all([
-      api.getShippingOpsOverview(),
-      api.getChannelHistory().catch(() => null),
-      api.getCargoHints().catch(() => null),
-    ]);
-    setData(overview.data);
-    if (channels) setChannelHistory(channels.data);
-    if (hints?.data.options?.length) setCargoOptions(hints.data.options);
+    setLoading(true);
+    setError("");
+    try {
+      const [overview, channels, hints] = await Promise.all([
+        api.getShippingOpsOverview(),
+        api.getChannelHistory().catch(() => null),
+        api.getCargoHints().catch(() => null),
+      ]);
+      setData(overview.data);
+      if (channels) setChannelHistory(channels.data);
+      if (hints?.data.options?.length) setCargoOptions(hints.data.options);
+    } finally {
+      setLoading(false);
+    }
   }
 
   async function searchChannelSku() {
@@ -409,7 +418,10 @@ export function ShippingOpsPage() {
   }
 
   useEffect(() => {
-    refresh().catch((e: Error) => setError(e.message));
+    refresh().catch((e: Error) => {
+      setError(e.message);
+      setLoading(false);
+    });
   }, []);
 
   useEffect(() => {
@@ -627,10 +639,19 @@ export function ShippingOpsPage() {
     <div>
       <h1 className="page-title">物流管理</h1>
       <p className="page-desc">
-        在途 / 送仓、货代性价比、面单裁标，以及下方「发货渠道参考」（历史走哪家货代、空/海运，并可按货代标注货性）。
+        在途 / 送仓、货代性价比、面单裁标、发货搭配（待发池/货性缺口），以及「发货渠道参考」。
         Catalog 头程优先用装箱双轨分摊。运费全局兜底在{" "}
         <Link to="/">我的主页</Link>。
       </p>
+      <div style={{ marginBottom: 12 }}>
+        <ExtensionDownloadBtn
+          extId="asn-booking"
+          onError={(msg) => setError(msg)}
+        />
+      </div>
+
+      <OutboundPackPanel />
+
       <div className="row" style={{ marginBottom: 14, flexWrap: "wrap", gap: 8 }}>
         <button
           className="btn btn-primary"
@@ -669,6 +690,11 @@ export function ShippingOpsPage() {
         </button>
       </div>
       {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
+      {loading && !data && !error && (
+        <p className="muted" style={{ marginBottom: 14 }}>
+          正在加载物流看板…
+        </p>
+      )}
 
       <div className="card" style={{ marginBottom: 16 }}>
         <h3 style={{ marginTop: 0 }}>按箱头程明细</h3>

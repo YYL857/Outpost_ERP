@@ -1,7 +1,11 @@
 # 慧运营 ERP
 
-跨境电商经营后台。业务数据统一来自 **NOON**。  
-若官方无开放接口：使用 **portal 模式**（后台导出 CSV/JSON 导入，或 Cookie 会话拉取）→ Inbox → 业务库。
+跨境电商经营后台。业务数据统一来自 **NOON**。
+
+同步主路径：
+
+- **Partner Impex（live）**：订单 / 销售报表 / 库存 / 价库 / 费用 → 直接写入各店 `state.json`
+- **Playwright（pw-rpa）**：须点门户导出的广告、销量等 → 各店 `portal-imports` → auto-ingest → `state.json`
 
 ## 快速开始
 
@@ -18,23 +22,25 @@ pnpm dev
 
 - 前端 http://127.0.0.1:5173
 - 后端 http://127.0.0.1:8787
-- 数据 `D:\outpost-data\json\state.json`（`OUTPOST_DATA_DIR`）
+- 数据根 `D:\outpost-data`（各店 `shops\{shopId}\json\state.json`、`shops\{shopId}\portal-imports\`）
 
-上线对接步骤见 [GO_LIVE.md](./GO_LIVE.md)。环境变量模板：[.env.example](./.env.example)。
+上线对接步骤见 [GO_LIVE.md](./GO_LIVE.md)。环境变量模板：[.env.example](./.env.example)。  
+Playwright 门户导出见 [docs/PW_RPA_PLATFORM.md](./docs/PW_RPA_PLATFORM.md)。
 
 ## 架构要点
 
 ```
-NOON 卖家后台
-  → 导出文件导入 或 Cookie+URL 会话拉取（portal）
-  → Inbox（先落库、归类）
-  → 幂等写入 orders/catalog/stock
-  → 业务模块只读本地库
+NOON
+  → Impex（live）直接入库
+  → 或 Playwright 门户导出 → portal-imports → Inbox / auto-ingest
+  → 幂等写入 orders / catalog / stock / salesFacts / adsFacts …
+  → 业务模块只读本地店态
   → 同步健康中心告警
 ```
 
-门户实现目录：`apps/api/src/platforms/noon/portal/`  
-操作入口：前端「NOON 接入」页。
+门户实现：`apps/api/src/platforms/noon/portal/`  
+Playwright 调度：`apps/api/src/modules/pw-rpa/`（脚本在 `apps/api/scripts/noon-pw-platform/`）  
+操作入口：前端「NOON 接入」/ 广告与补货相关导出按钮。
 
 ## 已具备模块
 

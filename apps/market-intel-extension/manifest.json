@@ -1,13 +1,14 @@
 {
   "manifest_version": 3,
   "name": "Outpost Noon SA Capture",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Noon SA capture: category ingest + PDP price monitor for Outpost market-intel.",
-  "permissions": ["activeTab", "scripting"],
+  "permissions": ["activeTab", "scripting", "storage"],
   "host_permissions": [
     "https://www.noon.com/*",
-    "http://127.0.0.1:8787/*",
-    "http://localhost:8787/*"
+    "http://127.0.0.1/*",
+    "http://localhost/*",
+    "http://*/*"
   ],
   "action": {
     "default_title": "Capture page → Outpost",

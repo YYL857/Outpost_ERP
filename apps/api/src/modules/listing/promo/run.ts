@@ -5,8 +5,9 @@ import {
   copyFileSync,
   readdirSync,
 } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
 import type { ListingDraft } from "../types.js";
 import { loadDraft, saveDraft } from "../store.js";
 import { listingPaths, promoJobDir, promoJobOutDir } from "../paths.js";
@@ -15,6 +16,7 @@ import { ingestPromoOutDir } from "./ingest.js";
 import type { PromoBrief, PromoJob } from "./types.js";
 import { emptyListingPromo } from "./types.js";
 import { folderHandoffDriver, promoInboxRoot } from "./drivers/folder-handoff.js";
+import { cursorRpaDriver } from "./drivers/cursor-rpa.js";
 import { resolvePromoDriverId } from "./drivers/types.js";
 import { sdkOptionalDriver } from "./drivers/sdk-optional.js";
 
@@ -163,12 +165,21 @@ function startOutPoll(draftId: string, jobId: string) {
   pollTimers.set(key, setInterval(tick, intervalMs));
 }
 
+export type PromoDispatchOpts = {
+  /**
+   * 浏览器是否用 localhost/127.0.0.1 打开页面。
+   * false = 连的是别的电脑上的 API：禁止键鼠 RPA / 禁止在服务器开资源管理器。
+   */
+  browserOnLocalhost?: boolean;
+};
+
 async function dispatchHandoff(
   draftId: string,
   jobId: string,
   kind: "generate" | "revise",
   reviseNote?: string,
   frameIndexes?: string[],
+  opts?: PromoDispatchOpts,
 ) {
   const key = `${draftId}:${jobId}`;
   if (running.has(key)) return;
@@ -202,7 +213,8 @@ async function dispatchHandoff(
     }
 
     const driverId = resolvePromoDriverId();
-    job.driverMode = driverId === "sdk" ? "sdk" : "folder";
+    job.driverMode =
+      driverId === "sdk" ? "sdk" : driverId === "rpa" ? "rpa" : "folder";
     job.status = "running";
     job.updatedAt = new Date().toISOString();
     job.outDirAbs = outDir;
@@ -256,21 +268,73 @@ async function dispatchHandoff(
       return;
     }
 
-    // —— 默认：文件夹投递 + 轮询 ——
+    // —— folder 落盘（rpa 与 folder 共用）——
     const fh = await folderHandoffDriver.dispatch(payload, job);
     draft = loadDraft(draftId)!;
     job = draft.promo.jobs.find((j) => j.id === jobId)!;
-    job.driverMode = "folder";
     job.inboxDirAbs = join(promoInboxRoot(), jobId);
-    job.status = "awaiting_images";
-    job.error = fh.ok
-      ? null
-      : fh.error || "投递失败";
-    job.updatedAt = new Date().toISOString();
-    // 状态说明写进 status，UI 用 inbox/out 路径
     if (fh.message) {
       writeFileSync(join(jobDir, "dispatch.txt"), fh.message + "\n", "utf8");
     }
+
+    if (driverId === "rpa") {
+      const allowRemote =
+        (process.env.LISTING_PROMO_RPA_ALLOW_REMOTE || "").trim() === "1";
+      const onLocalBrowser = opts?.browserOnLocalhost === true;
+
+      if (!onLocalBrowser && !allowRemote) {
+        // 别人连你的 API：绝不能在你电脑上弹 Cursor
+        job.driverMode = "folder";
+        job.status = "awaiting_images";
+        job.error =
+          "你正在通过局域网访问其它电脑上的 Outpost。键鼠出图只会在跑 API 的那台电脑执行，已禁止远程触发。" +
+          "请点「下载任务包」到你自己电脑，用本机 Cursor 出图后「上传成品图」；或在本机用 localhost 打开 Outpost 再生成。";
+        job.updatedAt = new Date().toISOString();
+        draft = upsertJob(draft, job);
+        saveDraft(draft);
+        writeJobStatus(draftId, job);
+        startOutPoll(draftId, jobId);
+        return;
+      }
+
+      job.driverMode = "rpa";
+      job.status = "running";
+      job.error = null;
+      job.updatedAt = new Date().toISOString();
+      draft = upsertJob(draft, job);
+      saveDraft(draft);
+      writeJobStatus(draftId, job);
+
+      const rpa = await cursorRpaDriver.dispatch(payload, job);
+      draft = loadDraft(draftId)!;
+      job = draft.promo.jobs.find((j) => j.id === jobId)!;
+      job.driverMode = "rpa";
+      job.status = "awaiting_images";
+      if (!rpa.ok) {
+        job.error = `本机唤起 Cursor 失败：${rpa.error || "未知错误"}。任务包已写好，可手动打开任务目录用 Cursor 出图，或点「扫目录回填」。`;
+      } else {
+        job.error = null;
+        if (rpa.message) {
+          writeFileSync(
+            join(jobDir, "rpa-dispatch.txt"),
+            rpa.message + "\n",
+            "utf8",
+          );
+        }
+      }
+      job.updatedAt = new Date().toISOString();
+      draft = upsertJob(draft, job);
+      saveDraft(draft);
+      writeJobStatus(draftId, job);
+      startOutPoll(draftId, jobId);
+      return;
+    }
+
+    // —— 仅 folder：投递 + 轮询（不唤起 Cursor）——
+    job.driverMode = "folder";
+    job.status = "awaiting_images";
+    job.error = fh.ok ? null : fh.error || "投递失败";
+    job.updatedAt = new Date().toISOString();
     draft = upsertJob(draft, job);
     saveDraft(draft);
     writeJobStatus(draftId, job);
@@ -291,7 +355,10 @@ async function dispatchHandoff(
   }
 }
 
-export function createPromoJob(draftId: string): {
+export function createPromoJob(
+  draftId: string,
+  opts?: PromoDispatchOpts,
+): {
   draft: ListingDraft;
   job: PromoJob;
 } | null {
@@ -303,7 +370,7 @@ export function createPromoJob(draftId: string): {
   }
   const brief = mergeBriefFromDraft(draft);
   if (!brief.skuLock.colorOnly && !brief.skuLock.specOnly) {
-    throw new Error("请先填写库存锁（至少颜色 ONLY 或规格 ONLY）");
+    throw new Error("请先填写库存锁（至少颜色或规格填一项）");
   }
 
   const jobId = `promo-${Date.now().toString(36)}-${randomUUID().slice(0, 6)}`;
@@ -351,14 +418,19 @@ export function createPromoJob(draftId: string): {
     error: null,
     outDirAbs: outDir,
     inboxDirAbs: join(promoInboxRoot(), jobId),
-    driverMode: resolvePromoDriverId() === "sdk" ? "sdk" : "folder",
+    driverMode: (() => {
+      const d = resolvePromoDriverId();
+      if (d === "sdk") return "sdk";
+      if (d === "rpa") return "rpa";
+      return "folder";
+    })(),
   };
 
   draft = upsertJob(draft, job);
   saveDraft(draft);
   writeJobStatus(draftId, job);
 
-  void dispatchHandoff(draftId, jobId, "generate");
+  void dispatchHandoff(draftId, jobId, "generate", undefined, undefined, opts);
   return { draft: loadDraft(draftId)!, job };
 }
 
@@ -367,6 +439,7 @@ export function revisePromoJob(
   jobId: string,
   note: string,
   frameIndexes?: string[],
+  opts?: PromoDispatchOpts,
 ): ListingDraft | null {
   let draft = loadDraft(draftId);
   if (!draft) return null;
@@ -387,7 +460,14 @@ export function revisePromoJob(
   saveDraft(draft);
   writeJobStatus(draftId, job);
 
-  void dispatchHandoff(draftId, jobId, "revise", note.trim(), frameIndexes);
+  void dispatchHandoff(
+    draftId,
+    jobId,
+    "revise",
+    note.trim(),
+    frameIndexes,
+    opts,
+  );
   return loadDraft(draftId);
 }
 
@@ -425,6 +505,58 @@ export function ingestPromoJob(draftId: string, jobId: string): ListingDraft | n
   return draft;
 }
 
+/**
+ * LAN / 非本机：把用户本机 Cursor 出的图回传到服务器 out/，再 ingest。
+ */
+export function uploadPromoOutImages(
+  draftId: string,
+  jobId: string,
+  files: Array<{ filename: string; base64: string }>,
+): ListingDraft {
+  let draft = loadDraft(draftId);
+  if (!draft) throw new Error("草稿不存在");
+  draft = ensurePromo(draft);
+  const job = draft.promo.jobs.find((j) => j.id === jobId);
+  if (!job) throw new Error("宣传图任务不存在");
+  if (!files.length) throw new Error("请至少上传一张成品图");
+
+  const outDir = promoJobOutDir(draftId, jobId);
+  if (!existsSync(outDir)) mkdirSync(outDir, { recursive: true });
+
+  let written = 0;
+  for (const f of files) {
+    const rawName = String(f.filename || "").replace(/[/\\]/g, "").trim();
+    if (!rawName || !/\.(jpe?g|png|webp)$/i.test(rawName)) continue;
+    const safe =
+      rawName.replace(/[^\w.\-()+ ]+/g, "_").slice(0, 120) || "frame.jpg";
+    const b64 = String(f.base64 || "").replace(/^data:[^;]+;base64,/, "");
+    if (!b64) continue;
+    let buf: Buffer;
+    try {
+      buf = Buffer.from(b64, "base64");
+    } catch {
+      continue;
+    }
+    if (!buf.length || buf.length > 12 * 1024 * 1024) continue;
+    writeFileSync(join(outDir, safe), buf);
+    written++;
+  }
+  if (!written) throw new Error("没有有效的图片文件（需 jpg/png/webp，单张≤12MB）");
+
+  applyIngestToJob(draftId, job);
+  if (!job.images.length) {
+    job.status = "awaiting_images";
+    job.error = `已写入 ${written} 张到 out/，但未能识别为宣传图文件名（请用 01-…-9x16.jpg 等）`;
+  } else if (job.status !== "needs_review") {
+    job.error = null;
+  }
+  job.updatedAt = new Date().toISOString();
+  draft = upsertJob(draft, job);
+  saveDraft(draft);
+  writeJobStatus(draftId, job);
+  return draft;
+}
+
 export function getPromoJob(
   draftId: string,
   jobId: string,
@@ -449,4 +581,51 @@ export function getPromoJob(
     }
   }
   return { draft, job };
+}
+
+/** 本机资源管理器打开宣传图 out 目录（仅允许该 job 的 out 路径） */
+export function openPromoOutFolder(
+  draftId: string,
+  jobId: string,
+  opts?: PromoDispatchOpts,
+): { path: string; opened: boolean; hint?: string } {
+  const draft = loadDraft(draftId);
+  if (!draft?.promo) throw new Error("草稿不存在");
+  const job = draft.promo.jobs.find((j) => j.id === jobId);
+  if (!job) throw new Error("宣传图任务不存在");
+
+  const expected = resolve(promoJobOutDir(draftId, jobId));
+  const fromJob = job.outDirAbs ? resolve(job.outDirAbs) : expected;
+  // 只打开本任务 out，防任意路径
+  const target =
+    fromJob.toLowerCase() === expected.toLowerCase() ? fromJob : expected;
+
+  if (!existsSync(target)) {
+    mkdirSync(target, { recursive: true });
+  }
+
+  const allowRemote =
+    (process.env.LISTING_PROMO_RPA_ALLOW_REMOTE || "").trim() === "1";
+  const onLocalBrowser = opts?.browserOnLocalhost === true || allowRemote;
+
+  if (!onLocalBrowser) {
+    return {
+      path: target,
+      opened: false,
+      hint:
+        "当前不是本机 localhost：文件夹在跑 API 的那台电脑上，已禁止远程打开。请用「下载任务包」到本机出图，再「上传成品图」。",
+    };
+  }
+
+  if (process.platform === "win32") {
+    spawn("explorer.exe", [target], {
+      detached: true,
+      stdio: "ignore",
+    }).unref();
+  } else if (process.platform === "darwin") {
+    spawn("open", [target], { detached: true, stdio: "ignore" }).unref();
+  } else {
+    spawn("xdg-open", [target], { detached: true, stdio: "ignore" }).unref();
+  }
+  return { path: target, opened: true };
 }

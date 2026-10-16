@@ -7,6 +7,7 @@ type Props = {
   onAck: () => void;
   onGo: () => void;
   onDismissReject: () => void;
+  onDismissReview: () => void;
   onSkip: () => void;
 };
 
@@ -23,6 +24,7 @@ export function TaskInboxModal({
   onAck,
   onGo,
   onDismissReject,
+  onDismissReview,
   onSkip,
 }: Props) {
   if (!item) return null;
@@ -60,14 +62,24 @@ export function TaskInboxModal({
             </>
           )}
           {item.type === "pending_review" && (
-            <button
-              type="button"
-              className="btn btn-primary"
-              disabled={busy}
-              onClick={onGo}
-            >
-              去验收
-            </button>
+            <>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={busy}
+                onClick={onDismissReview}
+              >
+                知道了
+              </button>
+              <button
+                type="button"
+                className="btn"
+                disabled={busy}
+                onClick={onGo}
+              >
+                去验收
+              </button>
+            </>
           )}
           {item.type === "rejected" && (
             <>

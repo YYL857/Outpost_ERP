@@ -1,5 +1,7 @@
 # 补货库存分仓 · 窗口交接
 
+> **2026-10-13**：可售对齐门户 Active Net / 一次同步写补货表 → 见 [`REPLENISH_ACTIVE_NET_SYNC_HANDOFF.md`](./REPLENISH_ACTIVE_NET_SYNC_HANDOFF.md)（下一窗优先做那个）。本文仅保留分仓 Impex / 旧影刀背景。
+
 > 更新：2026-10-06 · **影刀 fbn-stock 下岗**。Live 分仓以 Impex `ledgerdetailedview` 为准，不另做爬虫。门户 Summary 仅人工/inbox 验数。见 [`PW_RPA_PLATFORM.md`](./PW_RPA_PLATFORM.md)。
 
 > 2026-09-28 17:55 · ui 曾通；正式落盘 `portal-imports/fbn_*_{Y}.csv`。搭法 Skill：`.cursor/skills/yingdao-flow-build`。

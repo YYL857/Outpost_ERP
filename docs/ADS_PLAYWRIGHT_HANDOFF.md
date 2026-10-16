@@ -29,7 +29,7 @@ python main.py ads ui
 | `apps/api/src/modules/ads/ads-pw-cli.ts` | **新建**：spawn `python main.py ui`，支持 shops/range/days 环境变量 |
 | `apps/api/src/modules/ads/yingdao-cli.ts` | 薄别名 → ads-pw-cli（兼容旧 import） |
 | `apps/api/src/modules/ads/ads.routes.ts` | `/yingdao-export/run` + ensure/request-export 背后改 Playwright；文案去「影刀」 |
-| `apps/api/src/modules/sync/data-backfill.ts` | 只调 Playwright；**已删** pending + 影刀 CLI 两条腿；`skipYingdao`=跳过广告 RPA |
+| `apps/api/src/modules/sync/data-backfill.ts` | 一键补齐改为扫本地 portal-imports（不自动开 Playwright/Impex）；缺数给取数指引 |
 | `apps/web/src/pages/AdsPage.tsx` | 「导出广告表」 |
 | `apps/web/src/api.ts` | `runAdsPwExport`（旧名保留 deprecated） |
 | `apps/web/src/pages/ListingOptimizePanel.tsx` | 文案跟 ensure-export 对齐 |

@@ -78,7 +78,7 @@ cookie 过期时统一登录会停在 Noon 邮箱验证码页。配好本机 `.e
 2. 根目录 `.env`（勿提交）：
 
 ```env
-OUTPOST_NOON_OTP_AUTO=1
+# 无人值守默认开；仅 OUTPOST_NOON_OTP_AUTO=0 才关
 OUTPOST_NOON_LOGIN_EMAIL=17727538283@163.com
 OUTPOST_NOON_OTP_IMAP_HOST=imap.163.com
 OUTPOST_NOON_OTP_IMAP_USER=17727538283@163.com

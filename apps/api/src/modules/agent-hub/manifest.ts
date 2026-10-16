@@ -16,7 +16,7 @@ export function buildAgentHubManifest(): AgentHubManifest {
     version: 1,
     title: "Outpost 中枢 Agent 工具清单",
     principle:
-      "先选工具再说话；事实必须可追溯到工具证据。Wiki preload 只负责指路，不负责充当库存/财务真相。",
+      "先选工具再说话；事实必须可追溯到工具证据。系统骨架看 /api/system-map/agent-preload；Wiki preload 只负责表怎么连，不负责充当库存/财务真相。",
     protocolPath: "/api/agent-hub/protocol",
     preloadPath: "/api/wiki-graph/agent-preload",
     tools: AGENT_TOOLS,
@@ -53,7 +53,7 @@ export function manifestToMarkdown(m: AgentHubManifest): string {
   lines.push(
     "",
     "## 推荐决策顺序",
-    "1. hub.preload / hub.manifest",
+    "1. 看框架 hub.system_map；查表 hub.preload；选工具 hub.manifest",
     "2. 有键 → wiki.context_pack",
     "3. 要现状数字 → catalog / purchase / sales / finance / shipping / replenish",
     "4. 要判断建议 → ops.interpret（并保留 caveats）",

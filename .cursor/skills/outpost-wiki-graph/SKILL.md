@@ -39,10 +39,10 @@ Preload 解决「怎么走」；context-pack / 业务 API 解决「此刻是什�
 `POST /api/wiki-graph/rebuild`  
 汇总同步飞书成功后会自动跑 `wiki_graph` 阶段。
 
-## 与中枢 Agent 的关系
+## 与中枢 / 骨架的关系
 
-业务中枢请同时使用 **outpost-agent-hub** Skill：  
-先读 `/api/agent-hub/manifest`（工具 + 反幻觉），再用本 preload / context-pack 指路与跳转。
+看项目分层与模块入口用 **outpost-system-map**（`/api/system-map/agent-preload`），不要用本图代替架构。  
+业务中枢请同时使用 **outpost-agent-hub**：先读 `/api/agent-hub/manifest`（工具 + 反幻觉），再用本 preload / context-pack 指路与跳转。
 
 ## 禁止
 

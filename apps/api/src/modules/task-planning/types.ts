@@ -77,6 +77,8 @@ export type TaskRecord = {
   ackedAt: string | null;
   /** 被指派人是否已看过退回通知 */
   rejectNotifiedAt: string | null;
+  /** 创建者是否已看过待验收通知（弹窗只弹一次） */
+  reviewNotifiedAt: string | null;
 };
 
 export type TasksRegistry = {

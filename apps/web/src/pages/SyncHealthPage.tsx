@@ -28,11 +28,16 @@ const DOMAIN_LABEL: Record<string, string> = {
 };
 
 const CHANNEL_LABEL: Record<string, string> = {
-  "noon-impex": "Noon Impex 导出",
-  "yingdao-ads": "Playwright 广告导出",
-  snapshot: "Noon 快照拉取",
+  "noon-impex": "NOON 同步",
+  "yingdao-ads": "广告导出",
+  snapshot: "NOON 同步",
   none: "—",
-  feishu: "飞书表格直拉",
+  feishu: "飞书表格",
+  "feishu-local": "飞书本地数据",
+  "portal-imports": "已导出文件入库",
+  "guide-ads-pw": "请去广告导出",
+  "guide-sales": "请去销量导出",
+  "guide-impex": "请去 NOON / 汇总同步",
 };
 
 const STATUS_LABEL: Record<string, string> = {
@@ -179,19 +184,12 @@ export function SyncHealthPage() {
   }
 
   async function runDataBackfill() {
-    if (
-      !window.confirm(
-        "确认一键补齐？将按缺口一次拉 Noon（销售/订单/库存等）、飞书，并尽量触发 Playwright 广告导出。Impex 有配额限制，请勿连续狂点。",
-      )
-    ) {
-      return;
-    }
     setBusy("data-backfill");
     setError("");
-    setBackfillHint("补齐进行中…");
+    setBackfillHint("正在对齐缺口…");
     try {
       const res = await api.runDataBackfill();
-      setBackfillHint(res.message || res.data.message || "补齐完成");
+      setBackfillHint(res.message || res.data.message || "对齐完成");
       await refresh();
     } catch (e) {
       const msg = e instanceof Error ? e.message : "补齐失败";
@@ -241,7 +239,7 @@ export function SyncHealthPage() {
     <div className="align-hub">
       <h1 className="page-title">数据对齐</h1>
       <p className="page-desc">
-        汇总门禁店相对期望截止日的缺口、同步告警与补齐链路。销量/订单/广告：下午起才要求覆盖昨天；库存/价库按当天新鲜度。一键补齐默认只跑门禁店；本页仅超级管理员可操作。
+        汇总门禁店相对期望截止日的缺口与同步告警。销量/订单/广告：下午起才要求覆盖昨天；库存/价库按当天新鲜度。一键补齐用已有数据对齐缺口，仍缺时看明细「说明」。本页仅超级管理员可操作。
       </p>
 
       <section className={`align-hero status-bar ${heroTone}`}>
@@ -294,7 +292,7 @@ export function SyncHealthPage() {
             disabled={backfillRunning || Boolean(busy)}
             onClick={() => void runDataBackfill()}
           >
-            {backfillRunning ? "补齐中…" : "一键补齐"}
+            {backfillRunning ? "对齐中…" : "一键补齐"}
           </button>
           <button
             className="btn"
@@ -315,7 +313,7 @@ export function SyncHealthPage() {
       <div className="card" style={{ marginBottom: 16 }}>
         <h3 style={{ marginTop: 0 }}>待对齐明细</h3>
         <p className="muted" style={{ marginTop: 0 }}>
-          按店×数据域列出：本地已到哪天、还差几天、应由哪条链路补齐。日历域（销量/订单/广告）盯尾部滞后；库存/价库/费用按快照新鲜度。
+          按店×数据域列出：本地已到哪天、还差几天、建议取数方式。仍缺时「说明」会写清去哪取、取什么时段。
         </p>
         {gaps == null ? (
           <p className="muted">缺口审计加载中或接口不可用</p>

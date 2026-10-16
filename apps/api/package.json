@@ -7,6 +7,7 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
+    "start:runtime": "tsx src/index.ts",
     "test:assemble": "tsx src/modules/catalog/assemble.test.ts",
     "test:feishu-config": "tsx src/platforms/feishu/config.test.ts",
     "test:feishu-puller": "tsx src/platforms/feishu/puller.test.ts",
@@ -21,7 +22,8 @@
     "verify:noon-live": "tsx scripts/verify-noon-live.ts",
     "ops-daily:phase1": "tsx scripts/ops-daily-phase1.ts",
     "listing-promo:gate": "tsx scripts/listing-promo-sdk-gate.mts",
-    "listing-promo:login": "tsx scripts/listing-promo-sdk-login.mts"
+    "listing-promo:login": "tsx scripts/listing-promo-sdk-login.mts",
+    "listing-promo:rpa": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/listing-promo-cursor-rpa/run.ps1"
   },
   "dependencies": {
     "@cursor/sdk": "^1.0.37",

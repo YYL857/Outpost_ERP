@@ -9,8 +9,32 @@ import {
   type ArVerifyResult,
 } from "../api";
 import { ClearableInput } from "../components/ClearableInput";
+import { ExtensionDownloadBtn } from "../components/ExtensionDownloadBtn";
+import { copyText } from "../lib/clipboard";
+import {
+  clearLocalBackup,
+  isBackupNewerThan,
+  listingBackupKey,
+  readLocalBackup,
+  writeLocalBackup,
+  type LocalBackupEnvelope,
+} from "../lib/form-local-backup";
 import { ListingOptimizePanel } from "./ListingOptimizePanel";
 import { ListingPromoPanel } from "./ListingPromoPanel";
+
+type ListingFormBackup = {
+  step: "input" | "analysis" | "content";
+  notes: string;
+  ourPrice: string;
+  brandEn: string;
+  brandAr: string;
+  gtin: string;
+  numberOfPieces: string;
+  sizeUnit: string;
+  fulltypeHint: string;
+  competitors: ListingCompetitorInput[];
+  content: ListingOursNoonContent;
+};
 
 function emptyCompetitor(
   seed?: Partial<ListingCompetitorInput>,
@@ -51,12 +75,6 @@ async function fileToBase64(file: File): Promise<string> {
   return btoa(binary);
 }
 
-async function copyText(text: string) {
-  const t = text ?? "";
-  if (!t) return;
-  await navigator.clipboard.writeText(t);
-}
-
 function CopyField(props: {
   label: string;
   value: string;
@@ -77,7 +95,8 @@ function CopyField(props: {
           disabled={!props.value}
           title="复制"
           onClick={async () => {
-            await copyText(props.value);
+            const ok = await copyText(props.value);
+            if (!ok) return;
             setCopied(true);
             setTimeout(() => setCopied(false), 1200);
           }}
@@ -127,6 +146,16 @@ export function ListingPage() {
   const mode: "create" | "optimize" =
     modeParam === "optimize" ? "optimize" : "create";
   const seedHandled = useRef(false);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const oursDragDepth = useRef(0);
+  const hydratingRef = useRef(false);
+  const dirtyRef = useRef(false);
+  const dirtyGenRef = useRef(0);
+  const draftRef = useRef<ListingDraft | null>(null);
+  const contentRef = useRef<ListingOursNoonContent>(emptyContent());
+  const stepRef = useRef<"input" | "analysis" | "content">("input");
+  const autosaveTimerRef = useRef<number | null>(null);
+  const [oursDragOver, setOursDragOver] = useState(false);
   const [summaries, setSummaries] = useState<ListingDraftSummary[]>([]);
   const [draft, setDraft] = useState<ListingDraft | null>(null);
   const [content, setContent] = useState<ListingOursNoonContent>(emptyContent());
@@ -135,6 +164,10 @@ export function ListingPage() {
   const [step, setStep] = useState<"input" | "analysis" | "content">("input");
   const [arSource, setArSource] = useState("");
   const [arCheck, setArCheck] = useState<ArVerifyResult | null>(null);
+  const [saveHint, setSaveHint] = useState("");
+  const [pendingRestore, setPendingRestore] = useState<LocalBackupEnvelope<ListingFormBackup> | null>(
+    null,
+  );
 
   function setMode(next: "create" | "optimize") {
     const nextParams = new URLSearchParams(searchParams);
@@ -143,20 +176,187 @@ export function ListingPage() {
     setSearchParams(nextParams, { replace: true });
   }
 
+  function backupKeyFor(draftId: string) {
+    return listingBackupKey(undefined, draftId);
+  }
+
+  function buildFormBackup(
+    d: ListingDraft,
+    c: ListingOursNoonContent,
+    s: "input" | "analysis" | "content",
+  ): ListingFormBackup {
+    return {
+      step: s,
+      notes: d.notes || "",
+      ourPrice: d.ourPrice || "",
+      brandEn: d.brandEn || "",
+      brandAr: d.brandAr || "",
+      gtin: d.gtin || "",
+      numberOfPieces: d.numberOfPieces || "",
+      sizeUnit: d.sizeUnit || "",
+      fulltypeHint: d.fulltypeHint || "",
+      competitors: d.competitors || [],
+      content: c,
+    };
+  }
+
+  function writeBackupNow(
+    d: ListingDraft,
+    c: ListingOursNoonContent,
+    s: "input" | "analysis" | "content",
+  ) {
+    writeLocalBackup(backupKeyFor(d.id), buildFormBackup(d, c, s));
+  }
+
+  /** 须在 React useEffect 之后再清，避免 queueMicrotask 过早导致「脏循环」冲掉填写 */
+  function beginHydrating() {
+    hydratingRef.current = true;
+    dirtyRef.current = false;
+  }
+
+  function endHydrating() {
+    window.setTimeout(() => {
+      hydratingRef.current = false;
+    }, 0);
+  }
+
+  function contentHasUserText(c: ListingOursNoonContent): boolean {
+    return (
+      Boolean(c.titleEn?.trim()) ||
+      Boolean(c.titleAr?.trim()) ||
+      Boolean(c.longDescriptionEn?.trim()) ||
+      Boolean(c.longDescriptionAr?.trim()) ||
+      c.featureBulletsEn.some((x) => x.trim()) ||
+      c.featureBulletsAr.some((x) => x.trim())
+    );
+  }
+
+  async function flushAutosave() {
+    const src = draftRef.current;
+    const c = contentRef.current;
+    if (!src || !dirtyRef.current || hydratingRef.current) return;
+    const gen = dirtyGenRef.current;
+    setSaveHint("正在自动保存到服务器…");
+    try {
+      await api.patchListingDraft(src.id, {
+        notes: src.notes,
+        ourPrice: src.ourPrice,
+        brandEn: src.brandEn,
+        brandAr: src.brandAr,
+        gtin: src.gtin,
+        numberOfPieces: src.numberOfPieces,
+        sizeUnit: src.sizeUnit,
+        fulltypeHint: src.fulltypeHint,
+        competitors: src.competitors,
+      });
+      // 仅当文案区真有内容才回写；勿因草稿里已有旧 content 就用空表单盖掉服务器
+      if (contentHasUserText(c)) {
+        await api.patchListingDraftContent(src.id, {
+          ...c,
+          gtin: src.gtin || c.gtin,
+        });
+      }
+      // 保存期间用户又改了：保留 dirty，勿动表单 state
+      if (gen !== dirtyGenRef.current) {
+        setSaveHint("有新修改，稍后继续自动保存…");
+        scheduleAutosave();
+        return;
+      }
+      dirtyRef.current = false;
+      writeBackupNow(src, c, stepRef.current);
+      setSaveHint(`草稿字段已自动保存 ${new Date().toLocaleTimeString()}`);
+    } catch {
+      writeBackupNow(src, c, stepRef.current);
+      setSaveHint(
+        "服务器暂不可用（可能在重启），草稿已保存在本机浏览器；恢复后会自动同步",
+      );
+    }
+  }
+
+  function scheduleAutosave() {
+    if (autosaveTimerRef.current != null) {
+      window.clearTimeout(autosaveTimerRef.current);
+    }
+    autosaveTimerRef.current = window.setTimeout(() => {
+      void flushAutosave();
+    }, 2500);
+  }
+
+  function applyLocalBackup(bak: LocalBackupEnvelope<ListingFormBackup>) {
+    const src = draftRef.current;
+    if (!src) return;
+    const p = bak.payload;
+    beginHydrating();
+    const next: ListingDraft = {
+      ...src,
+      notes: p.notes,
+      ourPrice: p.ourPrice,
+      brandEn: p.brandEn,
+      brandAr: p.brandAr,
+      gtin: p.gtin,
+      numberOfPieces: p.numberOfPieces,
+      sizeUnit: p.sizeUnit,
+      fulltypeHint: p.fulltypeHint,
+      competitors: p.competitors?.length ? p.competitors : src.competitors,
+    };
+    setDraft(next);
+    setContent(p.content || emptyContent());
+    setStep(p.step || "input");
+    setPendingRestore(null);
+    endHydrating();
+    window.setTimeout(() => {
+      dirtyRef.current = true;
+      dirtyGenRef.current += 1;
+      void flushAutosave();
+    }, 50);
+  }
+
+  /** 服务端整单写回（打开草稿 / 模型结果）；自动保存勿走这里 */
+  function applyServerDraft(
+    d: ListingDraft,
+    opts?: {
+      content?: ListingOursNoonContent;
+      step?: "input" | "analysis" | "content";
+    },
+  ) {
+    beginHydrating();
+    setDraft(d);
+    const c = opts?.content ?? d.ours.content ?? contentRef.current;
+    if (opts?.content !== undefined || d.ours.content) {
+      setContent(opts?.content ?? d.ours.content ?? emptyContent());
+    }
+    if (opts?.step) setStep(opts.step);
+    writeBackupNow(d, c, opts?.step ?? stepRef.current);
+    endHydrating();
+  }
+
   async function refreshList() {
     const r = await api.listListingDrafts();
     setSummaries(r.data);
   }
 
   async function openDraft(id: string) {
+    beginHydrating();
+    setPendingRestore(null);
     const r = await api.getListingDraft(id);
     setDraft(r.data);
-    setContent(r.data.ours.content ?? emptyContent());
+    const c = r.data.ours.content ?? emptyContent();
+    setContent(c);
     setArSource("");
     setArCheck(null);
-    if (r.data.ours.content) setStep("content");
-    else if (r.data.analysis) setStep("analysis");
-    else setStep("input");
+    let nextStep: "input" | "analysis" | "content" = "input";
+    if (r.data.ours.content) nextStep = "content";
+    else if (r.data.analysis) nextStep = "analysis";
+    setStep(nextStep);
+    const bak = readLocalBackup<ListingFormBackup>(backupKeyFor(id));
+    if (bak && isBackupNewerThan(bak.savedAt, r.data.updatedAt)) {
+      setPendingRestore(bak);
+      setSaveHint("发现本机有更新的未同步填写，可恢复");
+    } else {
+      writeBackupNow(r.data, c, nextStep);
+      setSaveHint("");
+    }
+    endHydrating();
   }
 
   async function createNew(seed?: {
@@ -175,11 +375,9 @@ export function ListingPage() {
       const r = await api.createListingDraft({
         competitors: [competitor],
       } as Partial<ListingDraft>);
-      setDraft(r.data);
-      setContent(emptyContent());
+      applyServerDraft(r.data, { content: emptyContent(), step: "input" });
       setArSource("");
       setArCheck(null);
-      setStep("input");
       await refreshList();
       return r.data;
     } catch (e) {
@@ -192,6 +390,40 @@ export function ListingPage() {
 
   useEffect(() => {
     refreshList().catch((e: Error) => setError(e.message));
+  }, []);
+
+  useEffect(() => {
+    draftRef.current = draft;
+    contentRef.current = content;
+    stepRef.current = step;
+  }, [draft, content, step]);
+
+  useEffect(() => {
+    if (!draft || hydratingRef.current) return;
+    dirtyRef.current = true;
+    dirtyGenRef.current += 1;
+    writeBackupNow(draft, content, step);
+    scheduleAutosave();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional: backup on form state change
+  }, [draft, content, step]);
+
+  useEffect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (!dirtyRef.current) return;
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    const retry = window.setInterval(() => {
+      if (dirtyRef.current) void flushAutosave();
+    }, 15000);
+    return () => {
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      window.clearInterval(retry);
+      if (autosaveTimerRef.current != null) {
+        window.clearTimeout(autosaveTimerRef.current);
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -213,7 +445,7 @@ export function ListingPage() {
     setBusy("save");
     setError("");
     try {
-      const r = await api.patchListingDraft(src.id, {
+      await api.patchListingDraft(src.id, {
         notes: src.notes,
         ourPrice: src.ourPrice,
         brandEn: src.brandEn,
@@ -224,10 +456,18 @@ export function ListingPage() {
         fulltypeHint: src.fulltypeHint,
         competitors: src.competitors,
       });
-      setDraft(r.data);
-      return r.data;
+      dirtyRef.current = false;
+      writeBackupNow(src, contentRef.current, stepRef.current);
+      setSaveHint(`已保存 ${new Date().toLocaleTimeString()}`);
+      // 不把服务器整单 setDraft 回来，避免冲掉正在输入的焦点/未同步字段
+      return src;
     } catch (e) {
-      setError(e instanceof Error ? e.message : "保存失败");
+      writeBackupNow(src, contentRef.current, stepRef.current);
+      setError(
+        e instanceof Error
+          ? `${e.message}（本机已备份，服务器恢复后会自动同步）`
+          : "保存失败（本机已备份）",
+      );
       return null;
     } finally {
       setBusy("");
@@ -249,7 +489,7 @@ export function ListingPage() {
         });
         latest = r.data;
       }
-      setDraft(latest);
+      applyServerDraft(latest);
     } catch (e) {
       setError(e instanceof Error ? e.message : "上传失败");
     } finally {
@@ -275,14 +515,13 @@ export function ListingPage() {
         setBusy("vision");
         const r = await api.runListingVision(current.id);
         current = r.data;
-        setDraft(current);
+        applyServerDraft(current);
       }
       if (kind === "analyze" || kind === "all") {
         setBusy("analyze");
         const r = await api.runListingAnalyze(current.id);
         current = r.data;
-        setDraft(current);
-        setStep("analysis");
+        applyServerDraft(current, { step: "analysis" });
       }
       if (kind === "generate" || kind === "ours_generate") {
         setBusy("generate");
@@ -306,9 +545,10 @@ export function ListingPage() {
           oursOnly ? "ours_only" : "from_edges",
         );
         current = r.data;
-        setDraft(current);
-        setContent(current.ours.content ?? emptyContent());
-        setStep("content");
+        applyServerDraft(current, {
+          content: current.ours.content ?? emptyContent(),
+          step: "content",
+        });
       }
       await refreshList();
     } catch (e) {
@@ -316,7 +556,7 @@ export function ListingPage() {
       if (draft) {
         try {
           const r = await api.getListingDraft(draft.id);
-          setDraft(r.data);
+          applyServerDraft(r.data);
         } catch {
           /* ignore */
         }
@@ -331,14 +571,20 @@ export function ListingPage() {
     setBusy("content");
     setError("");
     try {
-      const r = await api.patchListingDraftContent(draft.id, {
+      await api.patchListingDraftContent(draft.id, {
         ...content,
         gtin: draft.gtin || content.gtin,
       });
-      setDraft(r.data);
-      setContent(r.data.ours.content ?? content);
+      dirtyRef.current = false;
+      writeBackupNow(draft, content, stepRef.current);
+      setSaveHint(`文案已保存 ${new Date().toLocaleTimeString()}`);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "保存文案失败");
+      writeBackupNow(draft, content, stepRef.current);
+      setError(
+        e instanceof Error
+          ? `${e.message}（本机已备份）`
+          : "保存文案失败（本机已备份）",
+      );
     } finally {
       setBusy("");
     }
@@ -494,8 +740,8 @@ export function ListingPage() {
 
   return (
     <div className="listing-page">
-      <h1 className="page-title">Listing</h1>
-      <div className="listing-mode-tabs" role="tablist" aria-label="Listing 功能">
+      <h1 className="page-title">上架文案</h1>
+      <div className="listing-mode-tabs" role="tablist" aria-label="上架文案功能">
         <button
           type="button"
           role="tab"
@@ -512,14 +758,57 @@ export function ListingPage() {
           className={`listing-mode-tab${mode === "optimize" ? " active" : ""}`}
           onClick={() => setMode("optimize")}
         >
-          Listing 优化
+          文案优化
         </button>
       </div>
       <p className="page-desc">
         {mode === "optimize"
-          ? "四步：① 填自有链接与现有文案 → ② 从后台导出表清洗 CTR/CVR → ③ 诊断点击/转化问题 → ④ 生成优化文案。"
+          ? "四步：① 填自有链接与现有文案 → ② 从后台导出表清洗点击率/转化率 → ③ 诊断点击/转化问题 → ④ 生成优化文案。"
           : "两条路：① 只上传本品图 → 凭图片生成标题/卖点/长描述；② 可选填对手 → 对比找优势后再生成。文案可复制到 Noon。"}
       </p>
+      {mode === "create" && (
+        <div style={{ marginBottom: 12 }}>
+          <ExtensionDownloadBtn
+            extId="listing"
+            onError={(msg) => setError(msg)}
+          />
+        </div>
+      )}
+      {pendingRestore && draft && (
+        <div
+          className="muted"
+          style={{
+            marginBottom: 10,
+            padding: "8px 10px",
+            background: "color-mix(in srgb, #2a7a4b 12%, var(--surface-2))",
+            borderLeft: "3px solid #2a7a4b",
+            fontSize: 13,
+          }}
+        >
+          本机有未同步的填写（{new Date(pendingRestore.savedAt).toLocaleString()}
+          ），可能因服务器重启未写上。
+          <button
+            type="button"
+            className="btn btn-primary"
+            style={{ marginLeft: 8 }}
+            onClick={() => applyLocalBackup(pendingRestore)}
+          >
+            恢复本机填写
+          </button>
+          <button
+            type="button"
+            className="btn"
+            style={{ marginLeft: 6 }}
+            onClick={() => {
+              clearLocalBackup(backupKeyFor(draft.id));
+              setPendingRestore(null);
+              setSaveHint("");
+            }}
+          >
+            丢弃本机备份
+          </button>
+        </div>
+      )}
 
       {mode === "optimize" ? (
         <ListingOptimizePanel />
@@ -659,6 +948,11 @@ export function ListingPage() {
                   <button type="button" className="btn" disabled={!!busy} onClick={() => void saveInputs()}>
                     保存
                   </button>
+                  {saveHint && (
+                    <span className="muted" style={{ fontSize: 12, alignSelf: "center" }}>
+                      {saveHint}
+                    </span>
+                  )}
                   <button
                     type="button"
                     className="btn"
@@ -715,16 +1009,82 @@ export function ListingPage() {
                 <div className="listing-cols">
                   <section className="card listing-panel listing-panel-ours">
                     <h3>本品（我们要卖的）</h3>
-                    <p className="muted">上传实拍图；品牌可空着让系统建议；条码 GTIN 请自己填，系统不会瞎编。</p>
+                    <p className="muted">上传实拍图；品牌可空着让系统建议；条码请自己填，系统不会瞎编。</p>
                     <div className="noon-field">
                       <label>本品图片（可多张）</label>
                       <input
+                        ref={imageInputRef}
                         type="file"
                         accept="image/*"
                         multiple
                         disabled={!!busy}
-                        onChange={(e) => onUpload(e.target.files)}
+                        style={{ display: "none" }}
+                        onChange={(e) => {
+                          void onUpload(e.target.files);
+                          e.target.value = "";
+                        }}
                       />
+                      <div
+                        className={[
+                          "listing-drop",
+                          oursDragOver ? "listing-drop-active" : "",
+                          busy ? "listing-drop-busy" : "",
+                        ]
+                          .filter(Boolean)
+                          .join(" ")}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => {
+                          if (!busy) imageInputRef.current?.click();
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            if (!busy) imageInputRef.current?.click();
+                          }
+                        }}
+                        onDragEnter={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          oursDragDepth.current += 1;
+                          setOursDragOver(true);
+                        }}
+                        onDragOver={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          e.dataTransfer.dropEffect = "copy";
+                        }}
+                        onDragLeave={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          oursDragDepth.current = Math.max(0, oursDragDepth.current - 1);
+                          if (oursDragDepth.current === 0) setOursDragOver(false);
+                        }}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          oursDragDepth.current = 0;
+                          setOursDragOver(false);
+                          if (busy) return;
+                          const files = Array.from(e.dataTransfer.files || []).filter(
+                            (f) =>
+                              f.type.startsWith("image/") ||
+                              /\.(jpe?g|png|webp|gif|bmp)$/i.test(f.name),
+                          );
+                          if (!files.length) {
+                            setError("请拖入图片文件");
+                            return;
+                          }
+                          const dt = new DataTransfer();
+                          for (const f of files) dt.items.add(f);
+                          void onUpload(dt.files);
+                        }}
+                      >
+                        <strong>
+                          {oursDragOver ? "松开即可上传" : "拖拽图片到此处上传"}
+                        </strong>
+                        <span className="muted">支持多张；也可点击选择文件</span>
+                      </div>
                     </div>
                     <div className="listing-thumbs">
                       {draft.ours.images.map((img) => (
@@ -749,19 +1109,19 @@ export function ListingPage() {
                     </div>
                     <div className="noon-bilingual">
                       <CopyField
-                        label="Brand (EN)"
+                        label="品牌（英文）"
                         value={draft.brandEn}
                         onChange={(v) => setDraft({ ...draft, brandEn: v })}
                       />
                       <CopyField
-                        label="Brand (AR)"
+                        label="品牌（阿拉伯文）"
                         value={draft.brandAr}
                         dir="rtl"
                         onChange={(v) => setDraft({ ...draft, brandAr: v })}
                       />
                     </div>
                     <CopyField
-                      label="GTIN（人工，模型不编造）"
+                      label="条码（人工填写，系统不编造）"
                       value={draft.gtin}
                       onChange={(v) => setDraft({ ...draft, gtin: v })}
                     />
@@ -772,25 +1132,25 @@ export function ListingPage() {
                         onChange={(v) => setDraft({ ...draft, ourPrice: v })}
                       />
                       <CopyField
-                        label="Fulltype 提示"
+                        label="商品类型提示"
                         value={draft.fulltypeHint}
                         onChange={(v) => setDraft({ ...draft, fulltypeHint: v })}
                       />
                     </div>
                     <div className="noon-bilingual">
                       <CopyField
-                        label="Number of pieces"
+                        label="件数"
                         value={draft.numberOfPieces}
                         onChange={(v) => setDraft({ ...draft, numberOfPieces: v })}
                       />
                       <CopyField
-                        label="Size Unit"
+                        label="尺寸单位"
                         value={draft.sizeUnit}
                         onChange={(v) => setDraft({ ...draft, sizeUnit: v })}
                       />
                     </div>
                     <CopyField
-                      label="本品备注（真实卖点/差异，供文本模型）"
+                      label="本品备注（真实卖点/差异，供生成文案）"
                       value={draft.notes}
                       multiline
                       onChange={(v) => setDraft({ ...draft, notes: v })}
@@ -820,7 +1180,8 @@ export function ListingPage() {
                   <section className="card listing-panel listing-panel-comp">
                     <h3>对手（可选，要对比时再填）</h3>
                     <p className="muted">
-                      可选。没有对手也能左侧上传图后点「凭本品图生成文案」。有对手时再填链接/卖点，或「导入扩展采集」做对比。
+                      可选。没有对手也能左侧上传图后点「凭本品图生成文案」。有对手时再填链接/卖点，或用 Listing
+                      扩展采集后点「导入扩展采集」（扩展里须填写与当前登录相同的用户名）。扩展可在本页顶部下载。
                     </p>
                     <div className="row" style={{ gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
                       <button
@@ -833,7 +1194,7 @@ export function ListingPage() {
                           try {
                             await saveInputs(draft);
                             const r = await api.importCompetitorCapture(draft.id);
-                            setDraft(r.data);
+                            applyServerDraft(r.data);
                           } catch (e) {
                             setError(e instanceof Error ? e.message : "导入失败");
                           } finally {
@@ -843,6 +1204,11 @@ export function ListingPage() {
                       >
                         导入扩展采集
                       </button>
+                      <ExtensionDownloadBtn
+                        extId="listing"
+                        compact
+                        onError={(msg) => setError(msg)}
+                      />
                     </div>
                     {draft.competitors.map((c, i) => (
                       <div key={c.id} className="listing-comp-block">
@@ -862,7 +1228,7 @@ export function ListingPage() {
                           onChange={(v) => updateCompetitor(i, { pastedPrice: v })}
                         />
                         <CopyField
-                          label="粘贴 Feature Bullets（可多行）"
+                          label="粘贴卖点条文（可多行）"
                           value={c.pastedBullets}
                           multiline
                           onChange={(v) => updateCompetitor(i, { pastedBullets: v })}
@@ -1104,19 +1470,19 @@ export function ListingPage() {
                         className="btn"
                         onClick={applyBrandSuggestion}
                       >
-                        填入 Brand
+                        填入品牌
                       </button>
                     </div>
                   )}
 
                   <div className="noon-bilingual">
                     <CopyField
-                      label="Product Title (English)"
+                      label="标题（英文）"
                       value={content.titleEn}
                       onChange={(v) => setContent({ ...content, titleEn: v })}
                     />
                     <CopyField
-                      label="Product Title (Arabic)"
+                      label="标题（阿拉伯文）"
                       value={content.titleAr}
                       dir="rtl"
                       onChange={(v) => setContent({ ...content, titleAr: v })}
@@ -1124,19 +1490,19 @@ export function ListingPage() {
                   </div>
 
                   <CopyField
-                    label="Product Fulltype"
+                    label="商品类型"
                     value={content.fulltype}
                     onChange={(v) => setContent({ ...content, fulltype: v })}
                   />
 
                   <div className="noon-bilingual">
                     <CopyField
-                      label="Brand (English)"
+                      label="品牌（英文）"
                       value={content.brandEn}
                       onChange={(v) => setContent({ ...content, brandEn: v })}
                     />
                     <CopyField
-                      label="Brand (Arabic)"
+                      label="品牌（阿拉伯文）"
                       value={content.brandAr}
                       dir="rtl"
                       onChange={(v) => setContent({ ...content, brandAr: v })}
@@ -1145,13 +1511,13 @@ export function ListingPage() {
 
                   <div className="noon-bilingual">
                     <CopyField
-                      label="Long Description (English)"
+                      label="长描述（英文）"
                       value={content.longDescriptionEn}
                       multiline
                       onChange={(v) => setContent({ ...content, longDescriptionEn: v })}
                     />
                     <CopyField
-                      label="Long Description (Arabic)"
+                      label="长描述（阿拉伯文）"
                       value={content.longDescriptionAr}
                       multiline
                       dir="rtl"
@@ -1161,26 +1527,26 @@ export function ListingPage() {
 
                   <div className="noon-bilingual">
                     <CopyField
-                      label="Number of pieces"
+                      label="件数"
                       value={content.numberOfPieces}
                       onChange={(v) => setContent({ ...content, numberOfPieces: v })}
                     />
                     <CopyField
-                      label="Size Unit"
+                      label="尺寸单位"
                       value={content.sizeUnit}
                       onChange={(v) => setContent({ ...content, sizeUnit: v })}
                     />
                   </div>
 
                   <div className="noon-bullets">
-                    <h4>Feature Bullet</h4>
+                    <h4>卖点条文</h4>
                     {(content.featureBulletsEn.length
                       ? content.featureBulletsEn
                       : ["", "", "", "", ""]
                     ).map((en, i) => (
                       <div key={i} className="noon-bilingual noon-bullet-row">
                         <CopyField
-                          label={`#${i + 1} English`}
+                          label={`#${i + 1} 英文`}
                           value={en}
                           onChange={(v) => {
                             const featureBulletsEn = [...content.featureBulletsEn];
@@ -1194,7 +1560,7 @@ export function ListingPage() {
                           }}
                         />
                         <CopyField
-                          label={`#${i + 1} Arabic`}
+                          label={`#${i + 1} 阿拉伯文`}
                           value={content.featureBulletsAr[i] || ""}
                           dir="rtl"
                           onChange={(v) => {
@@ -1217,12 +1583,12 @@ export function ListingPage() {
                         })
                       }
                     >
-                      + Add New
+                      + 新增一条
                     </button>
                   </div>
 
                   <CopyField
-                    label="GTIN"
+                    label="条码"
                     value={draft.gtin || content.gtin}
                     onChange={(v) => {
                       setDraft({ ...draft, gtin: v });
@@ -1231,7 +1597,7 @@ export function ListingPage() {
                   />
 
                   <div className="noon-images-slot">
-                    <h4>Images（本品已上传，请在 Noon 后台另行上传）</h4>
+                    <h4>图片（本品已上传，请在 Noon 后台另行上传）</h4>
                     <div className="listing-thumbs">
                       {draft.ours.images.map((img) => (
                         <div key={img.id} className="listing-thumb">

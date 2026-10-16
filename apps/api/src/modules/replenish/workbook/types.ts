@@ -17,11 +17,11 @@ export type ReplenishWorkbookRow = {
   /** 月均 × 备货月数 + 15 */
   demandQty: number;
   /**
-   * 可售库存（对齐门户 Active Net）：分仓 FBN + supermall。
+   * 可售库存（对齐门户 Active Net · FBN）：Catalog stock_fbn_net，无则分仓 FBN。
    * 建议补货用此字段。
    */
   fbn: number;
-  /** 分仓 FBN 合计（不含 supermall） */
+  /** 分仓 FBN 合计（不含 supermall；对照用） */
   fbnWh: number;
   supermall: number;
   inTransit: number;
@@ -65,7 +65,7 @@ export function workbookFormulaNote(coverMonths = 3): string {
   const m = Number.isFinite(coverMonths)
     ? Math.round(coverMonths * 10) / 10
     : 3;
-  return `需求库存=近三个月月均销量×${m}+15；可售=分仓FBN+supermall（贴近门户 Active Net）；FBN=仅FBN仓合计；supermall=超商仓合计；建议补货=ceil(max(0,需求−可售−在途))；在途=箱表ASN空（排除包装盒）。判定只有补货/不补货：淘汰/清仓/不补/暂时不补/走线下→不补货；N/A忽略。`;
+  return `需求库存=近三个月月均销量×${m}+15；可售=门户 Active Net（Catalog stock_fbn_net，无则分仓FBN）；FBN列=分仓FBN仓合计；supermall=超商仓合计（参考）；建议补货=ceil(max(0,需求−可售−在途))；在途=箱表ASN空（排除包装盒）。判定只有补货/不补货：淘汰/清仓/不补/暂时不补/走线下→不补货；N/A忽略。`;
 }
 
 export const WORKBOOK_FORMULA_NOTE = workbookFormulaNote(3);

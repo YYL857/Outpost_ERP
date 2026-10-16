@@ -7,7 +7,6 @@ export type ModuleKey =
   | "selection"
   | "best-sell"
   | "listing"
-  | "info-check"
   | "ads"
   | "sales"
   | "finance"
@@ -124,14 +123,7 @@ export const MODULES: AppModule[] = [
   { key: "catalog", title: "Catalog", path: "/catalog", phase: "P1", group: "选品与上架" },
   { key: "selection", title: "市场情报", path: "/selection", phase: "P1", group: "选品与上架" },
   { key: "best-sell", title: "Best Sell", path: "/best-sell", phase: "P1", group: "选品与上架" },
-  { key: "listing", title: "Listing", path: "/listing", phase: "P1", group: "选品与上架" },
-  {
-    key: "info-check",
-    title: "信息检查",
-    path: "/info-check",
-    phase: "P1",
-    group: "选品与上架",
-  },
+  { key: "listing", title: "上架文案", path: "/listing", phase: "P1", group: "选品与上架" },
   { key: "ads", title: "广告管理", path: "/ads", phase: "P2", group: "经营分析" },
   {
     key: "sales",
@@ -178,7 +170,7 @@ export const MODULES: AppModule[] = [
     path: "/ops-daily",
     phase: "P1",
     group: "经营分析",
-    roles: ["admin", "ops_lead", "ops"],
+    // 全员做日报：admin / ops_lead / ops / purchase 均可进
   },
   {
     key: "purchase",

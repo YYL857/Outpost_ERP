@@ -1,8 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { Router } from "express";
+import { Router, type Request } from "express";
 import type { AppState } from "../../common/types.js";
+import type { AuthedRequest } from "../../auth/middleware.js";
+import { runWithContext } from "../../auth/context.js";
+import { findUserByUsername, toAuthUser } from "../../auth/users.js";
+import { loadUserPrefs } from "../../auth/workspace.js";
+import { getActiveShop, loadRegistry } from "../../shops/registry.js";
 import { saveState } from "../../data/store.js";
 import { runCompetitorOursAnalysis } from "./analyze.js";
 import { runOursListingGenerate } from "./generate.js";
@@ -19,9 +24,13 @@ import {
   createPromoJob,
   getPromoJob,
   ingestPromoJob,
+  openPromoOutFolder,
   patchPromoBrief,
   revisePromoJob,
+  uploadPromoOutImages,
 } from "./promo/run.js";
+import { buildPromoPackZip } from "./promo/pack-zip.js";
+import { buildBrowserExtensionZip } from "../../common/browser-extensions.js";
 import {
   deleteDraft,
   deleteDraftImageFile,
@@ -66,6 +75,47 @@ import {
 
 function asStr(v: unknown) {
   return String(v ?? "").trim();
+}
+
+/**
+ * 已登录：写入当前用户 inbox。
+ * 局域网扩展免登：须带 Outpost 用户名，写入该用户 inbox（避免写进管理员目录导致同事「导入」为空）。
+ */
+function runCompetitorCaptureForRequester<T>(
+  req: Request,
+  body: Record<string, unknown>,
+  fn: () => T,
+): T {
+  const authed = (req as AuthedRequest).user;
+  if (authed) {
+    const prefs = loadUserPrefs(authed.id);
+    const registry = loadRegistry();
+    const shopId =
+      registry.shops.find((s) => s.id === prefs.selectedShopId)?.id ??
+      getActiveShop(registry).id;
+    return runWithContext({ user: authed, shopId }, fn);
+  }
+
+  const username = asStr(body.username);
+  if (!username) {
+    throw new Error(
+      "请在扩展里填写并保存你的 Outpost 用户名（与网页登录名相同），否则采集无法写入你的 Listing",
+    );
+  }
+  const record = findUserByUsername(username);
+  if (!record) {
+    throw new Error(`Outpost 用户不存在：${username}`);
+  }
+  if (record.disabled) {
+    throw new Error(`账号已停用：${username}`);
+  }
+  const user = toAuthUser(record);
+  const prefs = loadUserPrefs(user.id);
+  const registry = loadRegistry();
+  const shopId =
+    registry.shops.find((s) => s.id === prefs.selectedShopId)?.id ??
+    getActiveShop(registry).id;
+  return runWithContext({ user, shopId }, fn);
 }
 
 function parseCompetitors(raw: unknown): CompetitorInput[] {
@@ -280,7 +330,7 @@ export function createListingRouter(getState: () => AppState) {
     res.json({ data: { id, deleted: true } });
   });
 
-  /** 扩展：对手 PDP 采集 inbox（不混入本品） */
+  /** 扩展：对手 PDP 采集 inbox（不混入本品）；按登录用户 / 扩展填写的用户名写入对应工作区 */
   router.post("/competitor-capture", (req, res) => {
     const body = (req.body || {}) as Record<string, unknown>;
     const url = asStr(body.url || body.pageUrl);
@@ -295,18 +345,32 @@ export function createListingRouter(getState: () => AppState) {
     } else {
       pastedBullets = asStr(bulletsRaw);
     }
-    const capture = saveCompetitorCapture({
+
+    const capturePayload = {
       url,
       pastedTitle: asStr(body.pastedTitle ?? body.title),
       pastedPrice: asStr(body.pastedPrice ?? body.price),
       pastedBullets,
       pastedDescription: asStr(body.pastedDescription ?? body.description),
       brand: asStr(body.brand) || undefined,
-      source: "extension",
+      source: "extension" as const,
       capturedAt: new Date().toISOString(),
       pageUrl: asStr(body.pageUrl) || url,
-    });
-    res.json({ data: capture, message: "已写入对手采集 inbox" });
+    };
+
+    try {
+      const capture = runCompetitorCaptureForRequester(req, body, () =>
+        saveCompetitorCapture(capturePayload),
+      );
+      res.json({
+        data: capture,
+        message: "已写入对手采集 inbox（请回 Listing 点「导入扩展采集」）",
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      const code = /未登录|用户名|停用|不存在/.test(msg) ? 401 : 400;
+      res.status(code).json({ error: msg });
+    }
   });
 
   router.get("/competitor-capture/latest", (_req, res) => {
@@ -316,6 +380,28 @@ export function createListingRouter(getState: () => AppState) {
       return;
     }
     res.json({ data: latest });
+  });
+
+  /** 兼容旧路径；新码请用 GET /api/extensions/listing.zip */
+  router.get("/extension.zip", (_req, res) => {
+    try {
+      const pack = buildBrowserExtensionZip("listing");
+      if (!pack) {
+        res.status(404).json({ error: "扩展目录不存在（apps/listing-extension）" });
+        return;
+      }
+      res.setHeader("Content-Type", "application/zip");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${pack.filename}"`,
+      );
+      res.setHeader("X-Outpost-Extension-Version", pack.version);
+      res.send(pack.zip);
+    } catch (e) {
+      res.status(500).json({
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
   });
 
   /** 把最近一次扩展采集合并进草稿的 competitors */
@@ -775,12 +861,21 @@ export function createListingRouter(getState: () => AppState) {
 
   router.post("/drafts/:id/promo/jobs", (req, res) => {
     try {
-      const created = createPromoJob(String(req.params.id));
+      const browserOnLocalhost = Boolean(req.body?.browserOnLocalhost);
+      const created = createPromoJob(String(req.params.id), {
+        browserOnLocalhost,
+      });
       if (!created) {
         res.status(404).json({ error: "草稿不存在" });
         return;
       }
-      res.status(202).json({ data: created.draft, meta: { jobId: created.job.id } });
+      res.status(202).json({
+        data: created.draft,
+        meta: {
+          jobId: created.job.id,
+          browserOnLocalhost,
+        },
+      });
     } catch (e) {
       res.status(400).json({
         error: e instanceof Error ? e.message : String(e),
@@ -824,6 +919,7 @@ export function createListingRouter(getState: () => AppState) {
         String(req.params.jobId),
         note,
         frameIndexes,
+        { browserOnLocalhost: Boolean(req.body?.browserOnLocalhost) },
       );
       if (!draft) {
         res.status(404).json({ error: "任务不存在" });
@@ -845,6 +941,21 @@ export function createListingRouter(getState: () => AppState) {
         return;
       }
       res.json({ data: draft });
+    } catch (e) {
+      res.status(400).json({
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  });
+
+  router.post("/drafts/:id/promo/jobs/:jobId/open-out", (req, res) => {
+    try {
+      const opened = openPromoOutFolder(
+        String(req.params.id),
+        String(req.params.jobId),
+        { browserOnLocalhost: Boolean(req.body?.browserOnLocalhost) },
+      );
+      res.json({ data: opened });
     } catch (e) {
       res.status(400).json({
         error: e instanceof Error ? e.message : String(e),
@@ -892,6 +1003,51 @@ export function createListingRouter(getState: () => AppState) {
       return;
     }
     res.type("text/markdown").send(readFileSync(p, "utf8"));
+  });
+
+  /** 局域网客户端：下载 prompt+refs 到本机 Cursor 出图 */
+  router.get("/drafts/:id/promo/jobs/:jobId/pack.zip", (req, res) => {
+    try {
+      const pack = buildPromoPackZip(
+        String(req.params.id),
+        String(req.params.jobId),
+      );
+      if (!pack) {
+        res.status(404).json({ error: "任务包不存在（请先点生成宣传图）" });
+        return;
+      }
+      res.setHeader("Content-Type", "application/zip");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${pack.filename}"`,
+      );
+      res.send(pack.zip);
+    } catch (e) {
+      res.status(400).json({
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  });
+
+  /** 局域网客户端：本机出图后回传成品到服务器 out/ */
+  router.post("/drafts/:id/promo/jobs/:jobId/upload-out", (req, res) => {
+    try {
+      const files = Array.isArray(req.body?.files) ? req.body.files : [];
+      const draft = uploadPromoOutImages(
+        String(req.params.id),
+        String(req.params.jobId),
+        files.map((x: { filename?: unknown; base64?: unknown }) => ({
+          filename: asStr(x?.filename),
+          base64: asStr(x?.base64),
+        })),
+      );
+      const job = draft.promo?.jobs.find((j) => j.id === String(req.params.jobId));
+      res.json({ data: draft, meta: { job } });
+    } catch (e) {
+      res.status(400).json({
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
   });
 
   // —— Listing 优化 ——

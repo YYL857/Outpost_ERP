@@ -58,6 +58,4 @@ D:\outpost-data\noon-guide-capture\{shopId}\
 
 成功判定：离开 Store Dashboard `/home`，且非 fault/登录页。失败项保持 pending，勿空写 confirmed。
 
-## 与影刀的关系
-
-影刀 `outpost_noon_guide_capture` 仍可用；本脚本是 Playwright 替代路径，目录布局兼容。不注册 `/api/pw-rpa` 第四 job。
+不注册 `/api/pw-rpa` 第四 job；与广告/销量生产导出无关。

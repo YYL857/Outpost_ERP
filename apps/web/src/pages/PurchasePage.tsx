@@ -12,6 +12,7 @@ import { AccountsLedgerCard } from "../components/AccountsLedgerCard";
 import { ClearableInput } from "../components/ClearableInput";
 import { ProductCell } from "../components/ProductCell";
 import { filterProductDisplayRows } from "../lib/product-display";
+import { PurchaseReplenishBatchPanel } from "./PurchaseReplenishBatchPanel";
 
 export function PurchasePage() {
   const [summary, setSummary] = useState<PurchaseSummary | null>(null);
@@ -264,8 +265,11 @@ export function PurchasePage() {
         单位采购成本来自飞书产品表；采购明细 / 入账开支来自账目表「产品采购」等。Catalog{" "}
         <Link to="/catalog">本地入库</Link>{" "}
         与汇总同步也会带上 accounts。        1688：先「获取 1688 登录态」，再「同步 1688
-        物流」。物流查询只对齐近 30 天（约一个月）、有采购日期的在途/无运单；更早单无追踪意义。历史无日期脏数据不进入本功能。查询带人工节奏（逐字输入、批间短休），过慢可设 OUTPOST_1688_PACE=fast；物流只回填本系统，不写飞书。
+        物流」。物流查询只对齐近 30 天（约一个月）、有采购日期的在途/无运单；更早单无追踪意义。历史无日期脏数据不进入本功能。查询带人工节奏（逐字输入、批间短休），过慢可设 OUTPOST_1688_PACE=fast；        物流只回填本系统，不写飞书。
       </p>
+
+      <PurchaseReplenishBatchPanel />
+
       <div className="row" style={{ marginBottom: 14 }}>
         <button
           className="btn btn-primary"

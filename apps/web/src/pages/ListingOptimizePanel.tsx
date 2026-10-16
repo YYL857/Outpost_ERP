@@ -6,6 +6,7 @@ import {
   type ListingOursNoonContent,
 } from "../api";
 import { ClearableInput } from "../components/ClearableInput";
+import { copyText } from "../lib/clipboard";
 
 function emptyContent(): ListingOursNoonContent {
   return {
@@ -22,12 +23,6 @@ function emptyContent(): ListingOursNoonContent {
     featureBulletsAr: [],
     gtin: "",
   };
-}
-
-async function copyText(text: string) {
-  const t = text ?? "";
-  if (!t) return;
-  await navigator.clipboard.writeText(t);
 }
 
 function pct(n: number | null | undefined): string {
@@ -51,7 +46,8 @@ function CopyField(props: {
           className="btn btn-ghost noon-copy-btn"
           disabled={!props.value}
           onClick={async () => {
-            await copyText(props.value);
+            const ok = await copyText(props.value);
+            if (!ok) return;
             setCopied(true);
             setTimeout(() => setCopied(false), 1200);
           }}
@@ -168,7 +164,7 @@ export function ListingOptimizePanel() {
         const f = r.data.freshness;
         setExportHint(
           hint ||
-            `已有昨日广告数据（${f.yesterday}，${f.yesterdaySkuCount} SKU），可直接「绑定并清洗指标」。`,
+            `已有昨日广告数据（${f.yesterday}，${f.yesterdaySkuCount} 个货号），可直接「绑定并清洗指标」。`,
         );
         return;
       }
@@ -350,7 +346,7 @@ export function ListingOptimizePanel() {
                   onClick={() => setStep("input")}
                 >
                   <span className="listing-step-num">1</span>
-                  现有 Listing
+                  现有文案
                 </button>
                 <span className="listing-step-arrow" aria-hidden>
                   →
@@ -400,7 +396,7 @@ export function ListingOptimizePanel() {
                       type="button"
                       className="btn"
                       disabled={!!busy}
-                      title="有昨日数据则直接复用；缺昨日才启动 Playwright 导出"
+                      title="有昨日数据则直接复用；缺昨日才启动浏览器自动导出"
                       onClick={() => requestAdsPull(false)}
                     >
                       检查广告数据
@@ -409,7 +405,7 @@ export function ListingOptimizePanel() {
                       type="button"
                       className="btn"
                       disabled={!!busy}
-                      title="忽略已有数据，强制启动 Playwright 昨日导出"
+                      title="忽略已有数据，强制启动昨日广告自动导出"
                       onClick={() => requestAdsPull(true)}
                     >
                       强制重拉
@@ -458,7 +454,7 @@ export function ListingOptimizePanel() {
             {step === "input" && (
               <div className="listing-cols">
                 <section className="card listing-panel">
-                  <h3>链接与 SKU</h3>
+                  <h3>链接与货号</h3>
                   {(exportHint || exportReqId) && (
                     <p className="muted" style={{ fontSize: 13 }}>
                       {exportHint}
@@ -466,30 +462,30 @@ export function ListingOptimizePanel() {
                     </p>
                   )}
                   <label className="noon-field">
-                    Listing 链接
+                    商品链接
                     <ClearableInput
                       className="input"
                       value={job.listingUrl}
                       onChange={(e) =>
                         setJob({ ...job, listingUrl: e.target.value })
                       }
-                      placeholder="https://www.noon.com/..."
+                      placeholder="粘贴 Noon 商品链接"
                     />
                   </label>
                   <div className="row" style={{ gap: 12 }}>
                     <label className="noon-field" style={{ flex: 1 }}>
-                      partnerSku
+                      卖家货号
                       <ClearableInput
                         className="input"
                         value={job.partnerSku}
                         onChange={(e) =>
                           setJob({ ...job, partnerSku: e.target.value })
                         }
-                        placeholder="Seller SKU"
+                        placeholder="卖家货号"
                       />
                     </label>
                     <label className="noon-field" style={{ flex: 1 }}>
-                      noonSku
+                      Noon 货号
                       <ClearableInput
                         className="input"
                         value={job.noonSku}
@@ -509,21 +505,20 @@ export function ListingOptimizePanel() {
                     />
                   </label>
                   <label className="noon-field">
-                    可选：粘贴广告 CSV 覆盖（含 sku/views/clicks/orders…）
+                    可选：粘贴广告导出表覆盖（货号/浏览/点击/订单等列）
                     <textarea
                       rows={4}
                       value={metricsCsv}
                       onChange={(e) => setMetricsCsv(e.target.value)}
-                      placeholder="sku,views,clicks,orders,spend,revenue&#10;..."
+                      placeholder="货号,浏览,点击,订单,花费,营收&#10;..."
                     />
                   </label>
                   <p className="muted" style={{ fontSize: 12 }}>
-                    默认从已同步的广告导出与销量事实清洗 CTR/CVR；无数据时可粘贴
-                    CSV 覆盖。
+                    默认从已同步的广告导出与销量事实清洗点击率/转化率；无数据时可粘贴导出表覆盖。
                   </p>
                 </section>
                 <section className="card listing-panel">
-                  <h3>现有 Listing 文案</h3>
+                  <h3>现有上架文案</h3>
                   <label className="noon-field">
                     标题
                     <ClearableInput
@@ -622,16 +617,16 @@ export function ListingOptimizePanel() {
                 )}
                 {job.metrics.baseline && (
                   <p className="muted" style={{ fontSize: 13 }}>
-                    店内基线样本 {job.metrics.baseline.sampleSkuCount} SKU · CTR
-                    相对中位{" "}
+                    店内基线样本 {job.metrics.baseline.sampleSkuCount} 个货号 ·
+                    点击率相对中位{" "}
                     {job.metrics.baseline.skuCtrVsP50 != null
                       ? `${(job.metrics.baseline.skuCtrVsP50 * 100).toFixed(0)}%`
                       : "—"}{" "}
-                    · CVR 相对中位{" "}
+                    · 转化率相对中位{" "}
                     {job.metrics.baseline.skuCvrVsP50 != null
                       ? `${(job.metrics.baseline.skuCvrVsP50 * 100).toFixed(0)}%`
                       : "—"}{" "}
-                    · ATC率相对中位{" "}
+                    · 加购率相对中位{" "}
                     {job.metrics.baseline.skuAtcRateVsP50 != null
                       ? `${(job.metrics.baseline.skuAtcRateVsP50 * 100).toFixed(0)}%`
                       : "—"}
@@ -640,11 +635,17 @@ export function ListingOptimizePanel() {
                 <div className="listing-cols">
                   {(["d7", "d14", "d30", "latest"] as const).map((k) => {
                     const w = job.metrics!.ads[k];
+                    const windowLabel =
+                      k === "latest"
+                        ? "最近区间"
+                        : k === "d7"
+                          ? "近7日"
+                          : k === "d14"
+                            ? "近14日"
+                            : "近30日";
                     return (
                       <div key={k} className="card listing-panel" style={{ margin: 0 }}>
-                        <h4 style={{ marginTop: 0 }}>
-                          广告 {k === "latest" ? "最近区间" : k.toUpperCase()}
-                        </h4>
+                        <h4 style={{ marginTop: 0 }}>广告 {windowLabel}</h4>
                         {!w.hasData ? (
                           <p className="muted">无数据</p>
                         ) : (
@@ -654,14 +655,15 @@ export function ListingOptimizePanel() {
                               {w.atc ?? 0} → 订单 {w.orders}
                             </li>
                             <li>
-                              CTR {pct(w.ctr)} · ATC率 {pct(w.atcRate)} · CVR{" "}
-                              {pct(w.cvr)}
+                              点击率 {pct(w.ctr)} · 加购率 {pct(w.atcRate)} ·
+                              转化率 {pct(w.cvr)}
                             </li>
                             <li>
-                              Spend {w.spend} · Rev {w.revenue}
+                              花费 {w.spend} · 营收 {w.revenue}
                             </li>
                             <li>
-                              ROAS {w.roas ?? "—"} · ACOS {pct(w.acos)}
+                              广告回报 {w.roas ?? "—"} · 广告成本占比{" "}
+                              {pct(w.acos)}
                             </li>
                           </ul>
                         )}
@@ -717,7 +719,7 @@ export function ListingOptimizePanel() {
                 )}
                 <div className="listing-cols">
                   <section className="card listing-panel" style={{ margin: 0 }}>
-                    <h4>CTR 相关</h4>
+                    <h4>点击率相关</h4>
                     <ul className="listing-edges">
                       {job.diagnosis.ctrIssues.length === 0 && (
                         <li className="muted">无</li>
@@ -728,7 +730,7 @@ export function ListingOptimizePanel() {
                     </ul>
                   </section>
                   <section className="card listing-panel" style={{ margin: 0 }}>
-                    <h4>CVR 相关</h4>
+                    <h4>转化率相关</h4>
                     <ul className="listing-edges">
                       {job.diagnosis.cvrIssues.length === 0 && (
                         <li className="muted">无</li>
@@ -759,42 +761,42 @@ export function ListingOptimizePanel() {
 
             {step === "content" && job.optimized && (
               <div className="card">
-                <h3 style={{ marginTop: 0 }}>优化后的 Noon 文案</h3>
+                <h3 style={{ marginTop: 0 }}>优化后的上架文案</h3>
                 <div className="listing-cols">
                   <section className="listing-panel" style={{ margin: 0 }}>
-                    <CopyField label="Title EN" value={optimized.titleEn} />
+                    <CopyField label="标题（英文）" value={optimized.titleEn} />
                     <CopyField
-                      label="Title AR"
+                      label="标题（阿拉伯文）"
                       value={optimized.titleAr}
                       dir="rtl"
                     />
-                    <CopyField label="Brand EN" value={optimized.brandEn} />
+                    <CopyField label="品牌（英文）" value={optimized.brandEn} />
                     <CopyField
-                      label="Brand AR"
+                      label="品牌（阿拉伯文）"
                       value={optimized.brandAr}
                       dir="rtl"
                     />
-                    <CopyField label="Fulltype" value={optimized.fulltype} />
+                    <CopyField label="商品类型" value={optimized.fulltype} />
                   </section>
                   <section className="listing-panel" style={{ margin: 0 }}>
                     <CopyField
-                      label="Feature Bullets EN"
+                      label="卖点条文（英文）"
                       value={optimized.featureBulletsEn.join("\n")}
                       multiline
                     />
                     <CopyField
-                      label="Feature Bullets AR"
+                      label="卖点条文（阿拉伯文）"
                       value={optimized.featureBulletsAr.join("\n")}
                       multiline
                       dir="rtl"
                     />
                     <CopyField
-                      label="Long Description EN"
+                      label="长描述（英文）"
                       value={optimized.longDescriptionEn}
                       multiline
                     />
                     <CopyField
-                      label="Long Description AR"
+                      label="长描述（阿拉伯文）"
                       value={optimized.longDescriptionAr}
                       multiline
                       dir="rtl"

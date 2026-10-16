@@ -1,9 +1,11 @@
 /**
  * live 模式 Impex 域选择：填缺口 + 过期 Catalog/库存定期重拉。
  * 补货决策需要 FBN/Supermall 分仓库存 → 空或过期时拉 stock（Detailed ledger）。
+ * 库存日更两次由 stock-scheduler 负责；此处 stale 为安全网，且订单落后时优先 orders。
  */
 import type { AppState, StockItem } from "../../common/types.js";
 import type { NoonStockDto } from "../../platforms/noon/types.js";
+import { resolveLagExpectedEnd, shanghaiYmd } from "./gap-audit.js";
 
 export type LiveImpexDomain =
   | "catalog"
@@ -118,14 +120,53 @@ export function catalogRefreshStaleMs(): number {
 }
 
 /**
- * 默认 6h（补货要新库存）；可用 OUTPOST_LIVE_STOCK_REFRESH_MS 覆盖（毫秒，下限 1h）。
- * 以前 24h 偏松，且曾被 Catalog 提示冒充「刚同步」。
+ * 默认 14h（配合上海 09:30/16:00 日更两次，避免 6h 插队饿死 orders）；
+ * 可用 OUTPOST_LIVE_STOCK_REFRESH_MS 覆盖（毫秒，下限 1h）。
  */
 export function stockRefreshStaleMs(): number {
   const raw = Number(process.env.OUTPOST_LIVE_STOCK_REFRESH_MS ?? "");
-  const fallback = 6 * 60 * 60 * 1000;
+  const fallback = 14 * 60 * 60 * 1000;
   const ms = Number.isFinite(raw) && raw > 0 ? raw : fallback;
   return Math.max(60 * 60 * 1000, ms);
+}
+
+/** 订单游标落后多久视为需插队补拉（默认 18h） */
+export function ordersRefreshStaleMs(): number {
+  const raw = Number(process.env.OUTPOST_LIVE_ORDERS_STALE_MS ?? "");
+  const fallback = 18 * 60 * 60 * 1000;
+  const ms = Number.isFinite(raw) && raw > 0 ? raw : fallback;
+  return Math.max(60 * 60 * 1000, ms);
+}
+
+function orderPlacedYmd(placedAt: string | undefined | null): string | null {
+  if (!placedAt) return null;
+  const t = Date.parse(placedAt);
+  if (!Number.isFinite(t)) return null;
+  return shanghaiYmd(new Date(t));
+}
+
+/**
+ * 订单需插队：无单、最大下单日落后于期望截止、或 ordersSince 过旧。
+ * 用于防止 catalog/stock 刷新长期占住 Impex 轮转。
+ */
+export function needsOrdersCatchUp(
+  state: AppState,
+  nowMs = Date.now(),
+): boolean {
+  if ((state.orders?.length ?? 0) === 0) return true;
+  let maxDate: string | null = null;
+  for (const o of state.orders ?? []) {
+    const d = orderPlacedYmd(o.placedAt);
+    if (d && (!maxDate || d > maxDate)) maxDate = d;
+  }
+  const expectedEnd = resolveLagExpectedEnd(new Date(nowMs));
+  if (!maxDate || maxDate < expectedEnd) return true;
+  const since = state.cursors?.ordersSince;
+  // 日历已覆盖期望截止且无游标：不单凭 null 插队（避免误伤轮转）
+  if (!since) return false;
+  const ms = Date.parse(since);
+  if (Number.isNaN(ms)) return false;
+  return nowMs - ms >= ordersRefreshStaleMs();
 }
 
 export function catalogLastImpexAt(state: AppState): string | null {
@@ -184,15 +225,17 @@ export function needsStockImpexRefresh(
 }
 
 /**
- * 轮询单域：空表优先填缺口；库存过期插队；否则 sales→fees→orders。
+ * 轮询单域：空 Catalog 优先；订单落后插队；再 Catalog/库存过期；否则 sales→fees→orders。
  */
 export function pickLivePollDomain(
   state: AppState,
   rotate: number,
+  nowMs = Date.now(),
 ): LiveImpexDomain {
   if (state.catalog.length === 0) return "catalog";
-  if (needsCatalogImpexRefresh(state)) return "catalog";
-  if (needsStockImpexRefresh(state)) return "stock";
+  if (needsOrdersCatchUp(state, nowMs)) return "orders";
+  if (needsCatalogImpexRefresh(state, nowMs)) return "catalog";
+  if (needsStockImpexRefresh(state, nowMs)) return "stock";
   if (state.salesFacts.length === 0) return "sales";
   if (state.feeSnapshots.length === 0) return "fees";
   const cycle = ["sales", "fees", "orders"] as const;
@@ -200,12 +243,16 @@ export function pickLivePollDomain(
 }
 
 /**
- * 汇总同步每次最多 2 域：先补缺口（含 stock）。
+ * 汇总同步每次最多 2 域：订单落后优先；再补 stock/catalog 缺口。
  */
-export function pickLiveImpexDomains(state: AppState): LiveImpexDomain[] {
+export function pickLiveImpexDomains(
+  state: AppState,
+  nowMs = Date.now(),
+): LiveImpexDomain[] {
   if (state.catalog.length === 0) return ["catalog"];
   const out: LiveImpexDomain[] = [];
-  if (needsStockImpexRefresh(state)) out.push("stock");
+  if (needsOrdersCatchUp(state, nowMs)) out.push("orders");
+  if (needsStockImpexRefresh(state, nowMs) && out.length < 2) out.push("stock");
   if (state.salesFacts.length === 0 && out.length < 2) out.push("sales");
   if (
     state.feeSnapshots.length === 0 &&
@@ -215,19 +262,19 @@ export function pickLiveImpexDomains(state: AppState): LiveImpexDomain[] {
     out.push("fees");
   }
   if (out.length === 0) {
-    if (needsCatalogImpexRefresh(state)) {
+    if (needsCatalogImpexRefresh(state, nowMs)) {
       out.push("catalog", "sales");
     } else {
       out.push("sales", "fees");
     }
-  } else if (out.length === 1 && state.orders.length === 0) {
-    out.push("orders");
   } else if (
     out.length === 1 &&
-    needsCatalogImpexRefresh(state) &&
+    needsCatalogImpexRefresh(state, nowMs) &&
     !out.includes("catalog")
   ) {
     out.unshift("catalog");
+  } else if (out.length === 1 && state.orders.length === 0 && !out.includes("orders")) {
+    out.push("orders");
   }
   return out.slice(0, 2);
 }

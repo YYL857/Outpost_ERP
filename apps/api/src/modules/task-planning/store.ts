@@ -64,6 +64,7 @@ export function loadTasksRegistry(): TasksRegistry {
     ...t,
     draftSubmitAttachments: t.draftSubmitAttachments ?? [],
     rejectNotifiedAt: t.rejectNotifiedAt ?? null,
+    reviewNotifiedAt: t.reviewNotifiedAt ?? null,
   }));
   return {
     version: 1,
@@ -142,6 +143,7 @@ export function createTask(input: {
     updatedAt: ts,
     ackedAt: null,
     rejectNotifiedAt: null,
+    reviewNotifiedAt: null,
   };
   pushEvent(task, "created", createdBy, `指派给 ${input.assignee.username}`);
   return saveTask(task);
@@ -179,6 +181,7 @@ export function submitTask(
   task.draftSubmitAttachments = [];
   task.status = "submitted";
   task.review = null;
+  task.reviewNotifiedAt = null;
   pushEvent(task, "submitted", person, body.trim().slice(0, 120) || undefined);
   return saveTask(task);
 }
@@ -222,6 +225,11 @@ export function cancelTask(task: TaskRecord, user: AuthUser): TaskRecord {
 
 export function markRejectSeen(task: TaskRecord): TaskRecord {
   task.rejectNotifiedAt = nowIso();
+  return saveTask(task);
+}
+
+export function markReviewSeen(task: TaskRecord): TaskRecord {
+  task.reviewNotifiedAt = nowIso();
   return saveTask(task);
 }
 
