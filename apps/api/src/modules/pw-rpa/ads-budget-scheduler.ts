@@ -5,6 +5,8 @@
  * 默认：
  *   peak    00:10 → apply --mode peak   （回调 baseline）
  *   offpeak 09:10 → apply --mode offpeak（压到 5）
+ *
+ * 触发判定只认 slotRun（展示字段 last*Day 双写过渡）；收尾靠 onJobFinish，无 5s poll。
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -14,7 +16,12 @@ import {
   formatMinuteOfDay,
   shanghaiParts,
 } from "../morning-digest/clock.js";
-import { startPwJob, getPwJobStatus } from "./cli.js";
+import {
+  startPwJob,
+  getPwJobStatus,
+  onJobFinish,
+  type JobFinishInfo,
+} from "./cli.js";
 import { resolveOutpostDataRoot } from "./outpost-data-root.js";
 
 /**
@@ -43,6 +50,17 @@ export function shouldCatchUpMissedSlot(opts: {
 }
 
 export type AdsBudgetSlot = "peak" | "offpeak";
+
+export type SlotRunStatus = "running" | "done" | "failed";
+
+export type AdsBudgetSlotRun = {
+  slot: AdsBudgetSlot;
+  day: string;
+  runId: string;
+  status: SlotRunStatus;
+  startedAt: string | null;
+  finishedAt: string | null;
+};
 
 /**
  * 仅成功时占当日槽位；失败保持旧 day，便于 catch-up 窗口内再试。
@@ -97,6 +115,101 @@ export function shouldSkipRetryCooldown(opts: {
   return now - t < coolMin * 60_000;
 }
 
+/**
+ * 该槽今日是否已占用（done / running）。
+ * slot 不匹配 → 未触发；failed → 未占用（允许补跑，另受 cooldown）。
+ */
+export function dayClaimedForSlot(
+  slot: AdsBudgetSlot,
+  day: string,
+  slotRun: AdsBudgetSlotRun | null | undefined,
+): boolean {
+  if (!slotRun) return false;
+  if (slotRun.slot !== slot || slotRun.day !== day) return false;
+  if (slotRun.status === "done" || slotRun.status === "running") return true;
+  return false;
+}
+
+/** 给 shouldFireWallClock / catch-up 用的「已调度日」：只认 slotRun */
+export function lastScheduledDayFromSlotRun(
+  slot: AdsBudgetSlot,
+  slotRun: AdsBudgetSlotRun | null | undefined,
+): string | null {
+  if (!slotRun || slotRun.slot !== slot) return null;
+  if (slotRun.status === "done" || slotRun.status === "running") {
+    return slotRun.day;
+  }
+  return null;
+}
+
+/**
+ * 部署首日迁移：无 slotRun 时用 last*Day===today 初始化 done，避免再跑一遍。
+ * offpeak 优先（同日更晚的槽）。
+ */
+export function migrateSlotRunFromLastDays(opts: {
+  slotRun: AdsBudgetSlotRun | null | undefined;
+  lastPeakDay: string | null;
+  lastOffpeakDay: string | null;
+  lastRunAt: string | null;
+  today: string;
+}): AdsBudgetSlotRun | null {
+  if (opts.slotRun) return opts.slotRun;
+  if (opts.lastOffpeakDay === opts.today) {
+    return {
+      slot: "offpeak",
+      day: opts.today,
+      runId: "migrated",
+      status: "done",
+      startedAt: opts.lastRunAt,
+      finishedAt: opts.lastRunAt,
+    };
+  }
+  if (opts.lastPeakDay === opts.today) {
+    return {
+      slot: "peak",
+      day: opts.today,
+      runId: "migrated",
+      status: "done",
+      startedAt: opts.lastRunAt,
+      finishedAt: opts.lastRunAt,
+    };
+  }
+  return null;
+}
+
+/**
+ * API 重启后：slotRun 卡在 running 且内存 runId 对不上 → failed。
+ */
+export function reconcileStaleSlotRun(opts: {
+  slotRun: AdsBudgetSlotRun | null | undefined;
+  memoryRunId: string | null;
+  memoryStatus: string;
+  nowIso?: string;
+}): {
+  slotRun: AdsBudgetSlotRun | null;
+  changed: boolean;
+  message: string | null;
+} {
+  const sr = opts.slotRun ?? null;
+  if (!sr || sr.status !== "running") {
+    return { slotRun: sr, changed: false, message: null };
+  }
+  const memAlive =
+    (opts.memoryStatus === "running" || opts.memoryStatus === "starting") &&
+    opts.memoryRunId != null &&
+    opts.memoryRunId === sr.runId;
+  if (memAlive) {
+    return { slotRun: sr, changed: false, message: null };
+  }
+  const finishedAt = opts.nowIso ?? new Date().toISOString();
+  const message = "重启后遗留的 running";
+  return {
+    slotRun: { ...sr, status: "failed", finishedAt },
+    changed: true,
+    message,
+  };
+}
+
 export type AdsBudgetScheduleState = {
   enabled: boolean;
   shopIds: string[];
@@ -109,6 +222,8 @@ export type AdsBudgetScheduleState = {
   lastMessage: string | null;
   lastOk: boolean | null;
   lastSlot: AdsBudgetSlot | null;
+  /** 触发态；判定只认此字段，last*Day 为展示双写 */
+  slotRun: AdsBudgetSlotRun | null;
 };
 
 function dataRoot(): string {
@@ -154,26 +269,77 @@ function defaults(): AdsBudgetScheduleState {
     lastMessage: null,
     lastOk: null,
     lastSlot: null,
+    slotRun: null,
+  };
+}
+
+function normalizeSlotRun(
+  raw: Partial<AdsBudgetSlotRun> | null | undefined,
+): AdsBudgetSlotRun | null {
+  if (!raw || typeof raw !== "object") return null;
+  const slot = raw.slot === "offpeak" ? "offpeak" : raw.slot === "peak" ? "peak" : null;
+  const status =
+    raw.status === "done" || raw.status === "failed" || raw.status === "running"
+      ? raw.status
+      : null;
+  const day = typeof raw.day === "string" && raw.day.trim() ? raw.day.trim() : null;
+  const runId =
+    typeof raw.runId === "string" && raw.runId.trim() ? raw.runId.trim() : null;
+  if (!slot || !status || !day || !runId) return null;
+  return {
+    slot,
+    day,
+    runId,
+    status,
+    startedAt: typeof raw.startedAt === "string" ? raw.startedAt : null,
+    finishedAt: typeof raw.finishedAt === "string" ? raw.finishedAt : null,
   };
 }
 
 function load(): AdsBudgetScheduleState {
   const base = defaults();
   const p = configPath();
-  if (!existsSync(p)) return base;
-  try {
-    const raw = JSON.parse(readFileSync(p, "utf8")) as Partial<AdsBudgetScheduleState>;
-    return {
-      ...base,
-      ...raw,
-      shopIds:
-        Array.isArray(raw.shopIds) && raw.shopIds.length
-          ? raw.shopIds.map((s) => String(s).trim().toUpperCase()).filter(Boolean)
-          : base.shopIds,
-    };
-  } catch {
-    return base;
+  let merged: AdsBudgetScheduleState = { ...base };
+  if (existsSync(p)) {
+    try {
+      const raw = JSON.parse(
+        readFileSync(p, "utf8"),
+      ) as Partial<AdsBudgetScheduleState>;
+      merged = {
+        ...base,
+        ...raw,
+        shopIds:
+          Array.isArray(raw.shopIds) && raw.shopIds.length
+            ? raw.shopIds
+                .map((s) => String(s).trim().toUpperCase())
+                .filter(Boolean)
+            : base.shopIds,
+        slotRun: normalizeSlotRun(raw.slotRun) ?? null,
+      };
+    } catch {
+      merged = { ...base };
+    }
   }
+  const today = shanghaiParts().day;
+  const migrated = migrateSlotRunFromLastDays({
+    slotRun: merged.slotRun,
+    lastPeakDay: merged.lastPeakDay,
+    lastOffpeakDay: merged.lastOffpeakDay,
+    lastRunAt: merged.lastRunAt,
+    today,
+  });
+  if (migrated && !merged.slotRun) {
+    merged.slotRun = migrated;
+    try {
+      save(merged);
+      console.log(
+        `[ads-budget-sched] migrated slotRun=${migrated.slot}/${migrated.day} status=done from last*Day`,
+      );
+    } catch (e) {
+      console.log(`[ads-budget-sched] migrate save fail: ${e}`);
+    }
+  }
+  return merged;
 }
 
 function save(state: AdsBudgetScheduleState) {
@@ -182,8 +348,78 @@ function save(state: AdsBudgetScheduleState) {
   writeFileSync(p, JSON.stringify(state, null, 2), "utf8");
 }
 
+function writeScheduleLastTxt(opts: {
+  slot: AdsBudgetSlot;
+  ok: boolean;
+  status: string;
+  message: string | null;
+  shops: string[];
+  finishedAt: string;
+}) {
+  try {
+    const summaryPath = join(dataRoot(), "pw-rpa", "ads-budget-schedule-last.txt");
+    mkdirSync(dirname(summaryPath), { recursive: true });
+    writeFileSync(
+      summaryPath,
+      [
+        `finishedAt: ${opts.finishedAt}`,
+        `slot: ${opts.slot}`,
+        `ok: ${opts.ok}`,
+        `status: ${opts.status}`,
+        `message: ${opts.message ?? ""}`,
+        `shops: ${opts.shops.join(",")}`,
+        `seeAlso: ${join(dataRoot(), "pw-rpa", "ads-budget-last.txt")}`,
+        `history: ${join(dataRoot(), "pw-rpa", "ads-budget-runs.jsonl")}`,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+  } catch (e) {
+    console.log(`[ads-budget-sched] write schedule-last.txt fail: ${e}`);
+  }
+}
+
+function applyJobFinish(info: JobFinishInfo) {
+  const cfg = load();
+  if (!cfg.slotRun || cfg.slotRun.runId !== info.runId) return;
+  const slot = cfg.slotRun.slot;
+  const day = cfg.slotRun.day;
+  const ok = info.status === "ok";
+  cfg.slotRun = {
+    ...cfg.slotRun,
+    status: ok ? "done" : "failed",
+    finishedAt: info.finishedAt,
+  };
+  cfg.lastOk = ok;
+  cfg.lastRunAt = info.finishedAt;
+  cfg.lastMessage = info.message;
+  cfg.lastSlot = slot;
+  const days = slotDaysAfterFinish({
+    slot,
+    day,
+    ok,
+    lastPeakDay: cfg.lastPeakDay,
+    lastOffpeakDay: cfg.lastOffpeakDay,
+  });
+  cfg.lastPeakDay = days.lastPeakDay;
+  cfg.lastOffpeakDay = days.lastOffpeakDay;
+  save(cfg);
+  writeScheduleLastTxt({
+    slot,
+    ok,
+    status: info.status,
+    message: info.message,
+    shops: cfg.shopIds,
+    finishedAt: info.finishedAt,
+  });
+  console.log(
+    `[ads-budget-sched] ${slot} done status=${info.status} ${info.message ?? ""}`,
+  );
+}
+
 let timer: ReturnType<typeof setInterval> | null = null;
 let enabled = envDefaultEnabled();
+let offFinish: (() => void) | null = null;
 
 export function getAdsBudgetSchedulerStatus() {
   const cfg = load();
@@ -201,7 +437,8 @@ export function getAdsBudgetSchedulerStatus() {
     lastMessage: cfg.lastMessage,
     lastOk: cfg.lastOk,
     lastSlot: cfg.lastSlot,
-    note: "上海时区墙钟；需 API 过夜常开。登录态复用 noon-ads-pw + OTP 自动回填。",
+    slotRun: cfg.slotRun,
+    note: "上海时区墙钟；触发只认 slotRun。需 API 过夜常开。登录态复用 noon-ads-pw + OTP 自动回填。",
   };
 }
 
@@ -216,10 +453,23 @@ export function setAdsBudgetScheduleEnabled(on: boolean) {
 export function stopAdsBudgetScheduler() {
   if (timer) clearInterval(timer);
   timer = null;
+  // 保留 onJobFinish：停表后若仍有 in-flight slotRun，收尾仍须写盘
+}
+
+function ensureFinishSubscription() {
+  if (offFinish) return;
+  offFinish = onJobFinish("ads-budget", (info) => {
+    try {
+      applyJobFinish(info);
+    } catch (e) {
+      console.log(`[ads-budget-sched] onJobFinish error: ${e}`);
+    }
+  });
 }
 
 function ensureTimer() {
   if (enabled) {
+    ensureFinishSubscription();
     if (!timer) {
       timer = setInterval(() => tick(), 60_000);
       const cfg = load();
@@ -234,6 +484,7 @@ function ensureTimer() {
 
 function fireSlot(slot: AdsBudgetSlot, day: string) {
   const cfg = load();
+  // 保留：peak 补跑窗顶到 09:10，与 offpeak 边界相邻；不能只靠 slotRun
   const st = getPwJobStatus("ads-budget");
   if (st.status === "starting" || st.status === "running") {
     console.log(`[ads-budget-sched] skip ${slot}: job already running`);
@@ -245,7 +496,10 @@ function fireSlot(slot: AdsBudgetSlot, day: string) {
     return;
   }
 
-  console.log(`[ads-budget-sched] fire ${slot} day=${day} shops=${cfg.shopIds.join(",")}`);
+  console.log(
+    `[ads-budget-sched] fire ${slot} day=${day} shops=${cfg.shopIds.join(",")}`,
+  );
+  ensureFinishSubscription();
   const run = startPwJob("ads-budget", {
     cmd: "apply",
     mode: slot,
@@ -259,86 +513,71 @@ function fireSlot(slot: AdsBudgetSlot, day: string) {
   });
 
   const next = load();
-  next.lastRunAt = run.startedAt;
-  next.lastMessage = run.message;
-  next.lastOk =
-    run.status === "ok" ? true : run.status === "failed" ? false : next.lastOk;
   next.lastSlot = slot;
-  // 不在启动时写 last*Day：失败须能在当日 catch-up 窗口再试
-  if (run.status === "ok" || run.status === "failed") {
-    const days = slotDaysAfterFinish({
+  next.lastMessage = run.message;
+  next.lastRunAt = run.startedAt || run.finishedAt || next.lastRunAt;
+
+  if (run.status === "starting" || run.status === "running") {
+    // 启动成功立刻写 running（推翻「启动不写」）
+    next.slotRun = {
       slot,
       day,
-      ok: run.status === "ok",
-      lastPeakDay: next.lastPeakDay,
-      lastOffpeakDay: next.lastOffpeakDay,
-    });
-    next.lastPeakDay = days.lastPeakDay;
-    next.lastOffpeakDay = days.lastOffpeakDay;
-  }
-  save(next);
-
-  if (run.status === "ok" || run.status === "failed") {
-    console.log(
-      `[ads-budget-sched] ${slot} finished immediately status=${run.status}`,
-    );
+      runId: run.runId || `pw-ads-budget-unknown`,
+      status: "running",
+      startedAt: run.startedAt,
+      finishedAt: null,
+    };
+    save(next);
     return;
   }
 
-  // 异步收尾：子进程结束后再刷一次状态（cli 会更新 lastByJob）
-  const runId = run.runId;
-  const poll = setInterval(() => {
-    const cur = getPwJobStatus("ads-budget");
-    if (!runId || cur.runId !== runId) {
-      clearInterval(poll);
-      return;
-    }
-    if (cur.status === "ok" || cur.status === "failed") {
-      clearInterval(poll);
-      const done = load();
-      done.lastRunAt = cur.finishedAt || cur.startedAt;
-      done.lastMessage = cur.message;
-      done.lastOk = cur.status === "ok";
-      done.lastSlot = slot;
-      const days = slotDaysAfterFinish({
-        slot,
-        day,
-        ok: cur.status === "ok",
-        lastPeakDay: done.lastPeakDay,
-        lastOffpeakDay: done.lastOffpeakDay,
-      });
-      done.lastPeakDay = days.lastPeakDay;
-      done.lastOffpeakDay = days.lastOffpeakDay;
-      save(done);
-      // 调度侧也落一条可读摘要（Python job 会写更完整的 runs.jsonl）
-      try {
-        const summaryPath = join(dataRoot(), "pw-rpa", "ads-budget-schedule-last.txt");
-        const when = cur.finishedAt || new Date().toISOString();
-        mkdirSync(dirname(summaryPath), { recursive: true });
-        writeFileSync(
-          summaryPath,
-          [
-            `finishedAt: ${when}`,
-            `slot: ${slot}`,
-            `ok: ${cur.status === "ok"}`,
-            `status: ${cur.status}`,
-            `message: ${cur.message ?? ""}`,
-            `shops: ${cfg.shopIds.join(",")}`,
-            `seeAlso: ${join(dataRoot(), "pw-rpa", "ads-budget-last.txt")}`,
-            `history: ${join(dataRoot(), "pw-rpa", "ads-budget-runs.jsonl")}`,
-            "",
-          ].join("\n"),
-          "utf8",
-        );
-      } catch (e) {
-        console.log(`[ads-budget-sched] write schedule-last.txt fail: ${e}`);
-      }
-      console.log(
-        `[ads-budget-sched] ${slot} done status=${cur.status} ${cur.message ?? ""}`,
-      );
-    }
-  }, 5_000);
-  setTimeout(() => clearInterval(poll), 30 * 60_000);
+  // startPwJob 立刻 failed / ok：按返回写，勿无条件写 running
+  const ok = run.status === "ok";
+  const finishedAt = run.finishedAt || new Date().toISOString();
+  next.slotRun = {
+    slot,
+    day,
+    runId: run.runId || `pw-ads-budget-immediate`,
+    status: ok ? "done" : "failed",
+    startedAt: run.startedAt,
+    finishedAt,
+  };
+  next.lastOk = ok;
+  next.lastRunAt = finishedAt;
+  next.lastMessage = run.message;
+  const days = slotDaysAfterFinish({
+    slot,
+    day,
+    ok,
+    lastPeakDay: next.lastPeakDay,
+    lastOffpeakDay: next.lastOffpeakDay,
+  });
+  next.lastPeakDay = days.lastPeakDay;
+  next.lastOffpeakDay = days.lastOffpeakDay;
+  save(next);
+  writeScheduleLastTxt({
+    slot,
+    ok,
+    status: run.status,
+    message: run.message,
+    shops: cfg.shopIds,
+    finishedAt,
+  });
+  console.log(
+    `[ads-budget-sched] ${slot} finished immediately status=${run.status}`,
+  );
+}
+
+function cooldownAnchor(cfg: AdsBudgetScheduleState, slot: AdsBudgetSlot): string | null {
+  if (
+    cfg.slotRun &&
+    cfg.slotRun.slot === slot &&
+    cfg.slotRun.status === "failed" &&
+    cfg.slotRun.finishedAt
+  ) {
+    return cfg.slotRun.finishedAt;
+  }
+  return cfg.lastRunAt;
 }
 
 function tick() {
@@ -354,9 +593,10 @@ function tick() {
     "16:00",
   );
 
+  const peakClaimed = lastScheduledDayFromSlotRun("peak", cfg.slotRun);
   const peak = shouldFireWallClock({
     atMinuteOfDay: peakMin,
-    lastScheduledDay: cfg.lastPeakDay,
+    lastScheduledDay: peakClaimed,
     catchWindowMinutes: cfg.catchWindowMinutes,
   });
   if (peak.fire) {
@@ -367,7 +607,7 @@ function tick() {
   // API 半夜/早上才起来：短窗已过则补跑 peak（截止 offpeak 前）
   const peakCatch = shouldCatchUpMissedSlot({
     atMinuteOfDay: peakMin,
-    lastScheduledDay: cfg.lastPeakDay,
+    lastScheduledDay: peakClaimed,
     catchUpUntilMinuteOfDay: offMin,
   });
   if (peakCatch.fire) {
@@ -376,7 +616,7 @@ function tick() {
         slot: "peak",
         lastSlot: cfg.lastSlot,
         lastOk: cfg.lastOk,
-        lastRunAt: cfg.lastRunAt,
+        lastRunAt: cooldownAnchor(cfg, "peak"),
       })
     ) {
       console.log(
@@ -391,9 +631,10 @@ function tick() {
     return;
   }
 
+  const offClaimed = lastScheduledDayFromSlotRun("offpeak", cfg.slotRun);
   const off = shouldFireWallClock({
     atMinuteOfDay: offMin,
-    lastScheduledDay: cfg.lastOffpeakDay,
+    lastScheduledDay: offClaimed,
     catchWindowMinutes: cfg.catchWindowMinutes,
   });
   if (off.fire) {
@@ -403,7 +644,7 @@ function tick() {
 
   const offCatch = shouldCatchUpMissedSlot({
     atMinuteOfDay: offMin,
-    lastScheduledDay: cfg.lastOffpeakDay,
+    lastScheduledDay: offClaimed,
     catchUpUntilMinuteOfDay: offpeakEndMin,
   });
   if (offCatch.fire) {
@@ -412,7 +653,7 @@ function tick() {
         slot: "offpeak",
         lastSlot: cfg.lastSlot,
         lastOk: cfg.lastOk,
-        lastRunAt: cfg.lastRunAt,
+        lastRunAt: cooldownAnchor(cfg, "offpeak"),
       })
     ) {
       console.log(
@@ -427,16 +668,42 @@ function tick() {
   }
 }
 
+function reconcileOnStart() {
+  const cfg = load();
+  const mem = getPwJobStatus("ads-budget");
+  const r = reconcileStaleSlotRun({
+    slotRun: cfg.slotRun,
+    memoryRunId: mem.runId,
+    memoryStatus: mem.status,
+  });
+  if (!r.changed || !r.slotRun) return;
+  cfg.slotRun = r.slotRun;
+  cfg.lastOk = false;
+  cfg.lastRunAt = r.slotRun.finishedAt;
+  cfg.lastMessage = r.message;
+  cfg.lastSlot = r.slotRun.slot;
+  save(cfg);
+  console.log(
+    `[ads-budget-sched] reconcile: slotRun → failed (${r.message}) runId=${r.slotRun.runId}`,
+  );
+}
+
 export function startAdsBudgetScheduler(opts?: { enabled?: boolean }) {
   enabled = opts?.enabled ?? load().enabled;
   const cfg = load();
   cfg.enabled = enabled;
   save(cfg);
   stopAdsBudgetScheduler();
+  ensureFinishSubscription();
+  try {
+    reconcileOnStart();
+  } catch (e) {
+    console.log(`[ads-budget-sched] reconcile error: ${e}`);
+  }
   ensureTimer();
   if (enabled) {
     console.log(
-      `[ads-budget-sched] started peak=${formatMinuteOfDay(parseHhMm(cfg.peakAt, "00:10"))} offpeak=${formatMinuteOfDay(parseHhMm(cfg.offpeakAt, "09:10"))} (startup tick + missed-slot catch-up)`,
+      `[ads-budget-sched] started peak=${formatMinuteOfDay(parseHhMm(cfg.peakAt, "00:10"))} offpeak=${formatMinuteOfDay(parseHhMm(cfg.offpeakAt, "09:10"))} (startup tick + missed-slot catch-up; slotRun)`,
     );
     // 立刻判一次：避免等满 60s；也能吃到「刚启动已错过短窗」的补跑
     try {
@@ -445,6 +712,8 @@ export function startAdsBudgetScheduler(opts?: { enabled?: boolean }) {
       console.log(`[ads-budget-sched] startup tick error: ${e}`);
     }
   } else {
-    console.log("[ads-budget-sched] disabled (OUTPOST_ADS_BUDGET_SCHEDULE=0 or config)");
+    console.log(
+      "[ads-budget-sched] disabled (OUTPOST_ADS_BUDGET_SCHEDULE=0 or config)",
+    );
   }
 }

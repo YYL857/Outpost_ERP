@@ -124,6 +124,15 @@ export type PwJobStatus = {
   } | null;
 };
 
+export type AdsBudgetSlotRun = {
+  slot: "peak" | "offpeak";
+  day: string;
+  runId: string;
+  status: "running" | "done" | "failed";
+  startedAt: string | null;
+  finishedAt: string | null;
+};
+
 export type AdsBudgetScheduleStatus = {
   enabled: boolean;
   timerActive: boolean;
@@ -138,6 +147,8 @@ export type AdsBudgetScheduleStatus = {
   lastMessage: string | null;
   lastOk: boolean | null;
   lastSlot: "peak" | "offpeak" | null;
+  /** 触发态；判定只认此字段 */
+  slotRun?: AdsBudgetSlotRun | null;
   note?: string;
 };
 

@@ -60,6 +60,66 @@ export type PwJobRun = {
 
 const lastByJob = new Map<PwJobName, PwJobRun>();
 
+/** job 结束后的一次性通知（scheduler 等订阅；同一 runId 只发一次） */
+export type JobFinishInfo = {
+  job: PwJobName;
+  runId: string;
+  status: "ok" | "failed";
+  finishedAt: string;
+  message: string | null;
+  opts: PwJobOpts | null;
+};
+
+type JobFinishCb = (info: JobFinishInfo) => void;
+const finishListeners = new Map<PwJobName, Set<JobFinishCb>>();
+const emittedFinishRunIds = new Set<string>();
+
+export function onJobFinish(job: PwJobName, cb: JobFinishCb): () => void {
+  let set = finishListeners.get(job);
+  if (!set) {
+    set = new Set();
+    finishListeners.set(job, set);
+  }
+  set.add(cb);
+  return () => offJobFinish(job, cb);
+}
+
+export function offJobFinish(job: PwJobName, cb: JobFinishCb): void {
+  finishListeners.get(job)?.delete(cb);
+}
+
+function emitJobFinish(info: JobFinishInfo): void {
+  if (!info.runId) return;
+  if (emittedFinishRunIds.has(info.runId)) return;
+  emittedFinishRunIds.add(info.runId);
+  if (emittedFinishRunIds.size > 200) {
+    const oldest = emittedFinishRunIds.values().next().value;
+    if (oldest) emittedFinishRunIds.delete(oldest);
+  }
+  const set = finishListeners.get(info.job);
+  if (!set?.size) return;
+  for (const cb of set) {
+    try {
+      cb(info);
+    } catch (e) {
+      console.log(`[pw-rpa] onJobFinish ${info.job} listener error: ${e}`);
+    }
+  }
+}
+
+function emitFinishFromRun(run: PwJobRun): void {
+  if (run.status !== "ok" && run.status !== "failed") return;
+  if (!run.runId || !run.finishedAt) return;
+  emitJobFinish({
+    job: run.job,
+    runId: run.runId,
+    status: run.status,
+    finishedAt: run.finishedAt,
+    message: run.message,
+    opts: run.opts,
+  });
+}
+
 function emptyRun(job: PwJobName): PwJobRun {
   return {
     job,
@@ -420,6 +480,8 @@ export function startPwJob(job: PwJobName, opts: PwJobOpts = {}): PwJobRun {
       };
       lastByJob.set(job, failed);
       if (isExportJob(job)) upsertRunLog(failed, { trigger });
+      // 必须先改 lastByJob 再 emit（scheduler 读状态）
+      emitFinishFromRun(failed);
     }, timeoutMs);
   }
 
@@ -435,14 +497,18 @@ export function startPwJob(job: PwJobName, opts: PwJobOpts = {}): PwJobRun {
     };
     lastByJob.set(job, failed);
     if (isExportJob(job)) upsertRunLog(failed, { trigger, stdout });
+    emitFinishFromRun(failed);
   });
 
   child.on("close", (code) => {
     if (killTimer) clearTimeout(killTimer);
     const cur = lastByJob.get(job);
     if (!cur || cur.runId !== runId) return;
-    // 已被超时逻辑标成 failed 则保留
-    if (cur.status === "failed" && cur.finishedAt) return;
+    // 已被超时逻辑标成 failed 则保留；仍 emit（超时路径已发则去重）
+    if (cur.status === "failed" && cur.finishedAt) {
+      emitFinishFromRun(cur);
+      return;
+    }
     const combined = `${stdout}\n${stderr}`.trim();
     const ok = code === 0;
     const warnLine = combined
@@ -464,6 +530,7 @@ export function startPwJob(job: PwJobName, opts: PwJobOpts = {}): PwJobRun {
     };
     lastByJob.set(job, done);
     if (isExportJob(job)) upsertRunLog(done, { trigger, stdout: combined });
+    emitFinishFromRun(done);
     if (cmd === "ui" && (job === "ads" || job === "sales")) {
       void ingestPortalAfterPwJob(job, shopIds, startedAt).then((note) => {
         const later = lastByJob.get(job);
@@ -506,6 +573,7 @@ export function reapDeadPwJobs(): number {
         trigger: st.opts?.trigger === "schedule" ? "schedule" : "manual",
       });
     }
+    emitFinishFromRun(failed);
     n += 1;
     console.log(`[pw-rpa] reaper: ${j} runId=${st.runId} pid=${pid} → failed`);
   }

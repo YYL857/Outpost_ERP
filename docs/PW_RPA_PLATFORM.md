@@ -26,7 +26,7 @@ API（需 admin）：`POST /api/pw-rpa/:job/run`，`GET /api/pw-rpa/:job/status`
 | ads | `ads_sku_{from}_{to}.csv` | adsFacts（导出结束自动入库最新表） |
 | sales | `sales_export_{from}_{to}.csv` | salesFacts（导出结束自动入库最新表） |
 | keepalive | 无业务文件 | 刷新 `noon-ads-pw` + `noon-seller-pw` cookie |
-| ads-budget | `shops/{id}/ads-budget/baseline.csv` + `pw-rpa/ads-budget-runs.jsonl` | 不进 adsFacts；峰期/低峰改 Live 日预算；API 墙钟定时 peak@00:10 / offpeak@09:10（试店，见 [`ADS_BUDGET_PEAK_HANDOFF.md`](./ADS_BUDGET_PEAK_HANDOFF.md)）。读数：`needsBaselineCount` 仅 peak 有意义（offpeak 恒 0）；`durationMs` ≠ scrape+apply（差值是页面/杂项固定开销） |
+| ads-budget | `shops/{id}/ads-budget/baseline.csv` + `pw-rpa/ads-budget-runs.jsonl` | 不进 adsFacts；峰期/低峰改 Live 日预算；API 墙钟定时 peak@00:10 / offpeak@09:10（试店，见 [`ADS_BUDGET_PEAK_HANDOFF.md`](./ADS_BUDGET_PEAK_HANDOFF.md)）。调度触发只认 `slotRun`（`onJobFinish` 收尾，无 5s poll）；读数：`needsBaselineCount` 仅 peak 有意义（offpeak 恒 0）；`durationMs` ≠ scrape+apply（差值是页面/杂项固定开销） |
 
 Cookie 分站点：Ad Manager ≠ Seller Lab。浏览器必须 `launch + storage_state`。  
 桥接库：`D:\YingDao\Flows\_lib\outpost_bridge.py`（历史目录名；原始表/规范 CSV 暂存其 Downloads/Exports，**权威入库**为各店 `portal-imports`）。
