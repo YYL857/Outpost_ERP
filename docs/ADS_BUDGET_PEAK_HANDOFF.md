@@ -131,7 +131,11 @@ API 启动时会挂墙钟调度（上海时区），配置落盘：
 - **API 进程应过夜常开**；若半夜/早上才起来，会**当日补跑**：
   - peak：错过 00:10 短窗后，在 **09:10 前**仍会补一次拉回 baseline
   - offpeak：错过 09:10 短窗后，在 **16:00 前**仍会补一次压到 5
-  - **仅成功**才写入 `lastPeakDay` / `lastOffpeakDay`；失败当天仍可在 catch-up 窗口再试
+  - **触发判定只认 `slotRun`**（`running|done|failed`）；`lastPeakDay` / `lastOffpeakDay` 双写展示，过渡期不参与判定
+  - 启动成功立刻写 `slotRun.status=running`；收尾靠 `onJobFinish`（无 5s poll）
+  - 成功 → `done` 并双写 `last*Day`；失败 → `failed`，catch-up 窗口内可补跑（受 cooldown）
+  - API 重启时若 `slotRun` 仍 `running` 且内存 runId 对不上 → 判 `failed`（「重启后遗留的 running」）
+  - 部署迁移：无 `slotRun` 且 `last*Day===today` → 初始化对应槽 `done`，避免当天再跑一遍
   - 调度启动时立刻 `tick()` 一次，不必再等 60s
 - 登录态（**sync / apply / probe 共用**）：
   1. 启动前检查 Ad Manager SSO cookie，没有则统一登录（IMAP OTP）

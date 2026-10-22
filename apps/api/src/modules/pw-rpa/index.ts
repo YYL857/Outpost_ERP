@@ -8,6 +8,8 @@ export {
   startPwJobReaper,
   stopPwJobReaper,
   reapDeadPwJobs,
+  onJobFinish,
+  offJobFinish,
 } from "./cli.js";
 export {
   resolveJobTimeoutMs,

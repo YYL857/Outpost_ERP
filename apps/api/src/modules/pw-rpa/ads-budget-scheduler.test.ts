@@ -7,6 +7,13 @@ import {
   shouldCatchUpMissedSlot,
   slotDaysAfterFinish,
   shouldSkipRetryCooldown,
+  dayClaimedForSlot,
+  lastScheduledDayFromSlotRun,
+  migrateSlotRunFromLastDays,
+  reconcileStaleSlotRun,
+  applySlotFinish,
+  type AdsBudgetSlotRun,
+  type AdsBudgetScheduleState,
 } from "./ads-budget-scheduler.js";
 
 assert.equal(parseHhMm("00:10", "00:10"), 10);
@@ -110,5 +117,149 @@ assert.equal(
   }),
   false,
 );
+
+// —— slotRun 判定 ——
+const runningPeak: AdsBudgetSlotRun = {
+  slot: "peak",
+  day: "2026-10-22",
+  runId: "pw-ads-budget-aaa",
+  status: "running",
+  startedAt: "2026-10-21T16:10:00.000Z",
+  finishedAt: null,
+};
+assert.equal(dayClaimedForSlot("peak", "2026-10-22", runningPeak), true);
+assert.equal(dayClaimedForSlot("offpeak", "2026-10-22", runningPeak), false);
+assert.equal(dayClaimedForSlot("peak", "2026-10-21", runningPeak), false);
+assert.equal(
+  lastScheduledDayFromSlotRun("peak", runningPeak),
+  "2026-10-22",
+);
+assert.equal(lastScheduledDayFromSlotRun("offpeak", runningPeak), null);
+
+const failedPeak: AdsBudgetSlotRun = {
+  ...runningPeak,
+  status: "failed",
+  finishedAt: "2026-10-21T16:20:00.000Z",
+};
+assert.equal(dayClaimedForSlot("peak", "2026-10-22", failedPeak), false);
+assert.equal(lastScheduledDayFromSlotRun("peak", failedPeak), null);
+
+const donePeak: AdsBudgetSlotRun = {
+  ...runningPeak,
+  status: "done",
+  finishedAt: "2026-10-21T16:20:00.000Z",
+};
+assert.equal(dayClaimedForSlot("peak", "2026-10-22", donePeak), true);
+
+// 迁移：无 slotRun + lastPeakDay===today → peak done（避免部署日再跑）
+const migPeak = migrateSlotRunFromLastDays({
+  slotRun: null,
+  lastPeakDay: "2026-10-22",
+  lastOffpeakDay: null,
+  lastRunAt: "2026-10-21T16:20:00.000Z",
+  today: "2026-10-22",
+});
+assert.equal(migPeak?.slot, "peak");
+assert.equal(migPeak?.status, "done");
+assert.equal(migPeak?.runId, "migrated");
+
+// 同日已跑过 offpeak：优先 offpeak done
+const migOff = migrateSlotRunFromLastDays({
+  slotRun: null,
+  lastPeakDay: "2026-10-22",
+  lastOffpeakDay: "2026-10-22",
+  lastRunAt: "2026-10-22T01:15:00.000Z",
+  today: "2026-10-22",
+});
+assert.equal(migOff?.slot, "offpeak");
+assert.equal(migOff?.status, "done");
+
+assert.equal(
+  migrateSlotRunFromLastDays({
+    slotRun: donePeak,
+    lastPeakDay: "2026-10-22",
+    lastOffpeakDay: null,
+    lastRunAt: null,
+    today: "2026-10-22",
+  }),
+  donePeak,
+);
+
+// reconcile：重启后内存无对应 runId → failed
+const rec = reconcileStaleSlotRun({
+  slotRun: runningPeak,
+  memoryRunId: null,
+  memoryStatus: "idle",
+  nowIso: "2026-10-22T02:00:00.000Z",
+});
+assert.equal(rec.changed, true);
+assert.equal(rec.slotRun?.status, "failed");
+assert.equal(rec.message, "重启后遗留的 running");
+
+const recAlive = reconcileStaleSlotRun({
+  slotRun: runningPeak,
+  memoryRunId: "pw-ads-budget-aaa",
+  memoryStatus: "running",
+});
+assert.equal(recAlive.changed, false);
+
+// —— applySlotFinish：匹配→done / 不匹配→原样 / 重复→幂等 ——
+function baseState(slotRun: AdsBudgetSlotRun | null): AdsBudgetScheduleState {
+  return {
+    enabled: true,
+    shopIds: ["PRJ488078"],
+    peakAt: "00:10",
+    offpeakAt: "09:10",
+    catchWindowMinutes: 8,
+    lastPeakDay: null,
+    lastOffpeakDay: null,
+    lastRunAt: null,
+    lastMessage: null,
+    lastOk: null,
+    lastSlot: null,
+    slotRun,
+  };
+}
+
+const matchOk = applySlotFinish(baseState(runningPeak), {
+  runId: "pw-ads-budget-aaa",
+  status: "ok",
+  finishedAt: "2026-10-21T16:25:00.000Z",
+  message: "ok",
+});
+assert.equal(matchOk.applied, true);
+assert.equal(matchOk.state.slotRun?.status, "done");
+assert.equal(matchOk.state.lastPeakDay, "2026-10-22");
+assert.equal(matchOk.state.lastOk, true);
+
+const noMatch = applySlotFinish(baseState(runningPeak), {
+  runId: "pw-ads-budget-other",
+  status: "ok",
+  finishedAt: "2026-10-21T16:25:00.000Z",
+  message: "ok",
+});
+assert.equal(noMatch.applied, false);
+assert.equal(noMatch.state.slotRun?.status, "running");
+assert.equal(noMatch.state.lastPeakDay, null);
+
+const alreadyDone = applySlotFinish(baseState(donePeak), {
+  runId: "pw-ads-budget-aaa",
+  status: "ok",
+  finishedAt: "2026-10-21T16:30:00.000Z",
+  message: "again",
+});
+assert.equal(alreadyDone.applied, false);
+assert.equal(alreadyDone.state.slotRun?.finishedAt, donePeak.finishedAt);
+
+const matchFail = applySlotFinish(baseState(runningPeak), {
+  runId: "pw-ads-budget-aaa",
+  status: "failed",
+  finishedAt: "2026-10-21T16:25:00.000Z",
+  message: "boom",
+});
+assert.equal(matchFail.applied, true);
+assert.equal(matchFail.state.slotRun?.status, "failed");
+assert.equal(matchFail.state.lastOk, false);
+assert.equal(matchFail.state.lastPeakDay, null);
 
 console.log("ads-budget-scheduler clock ok");
