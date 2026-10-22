@@ -24,6 +24,7 @@ const run = (over: Partial<PwJobRun>): PwJobRun => ({
     shopIds: ["PRJ482387"],
     cmd: "ui",
   },
+  lastHeartbeatAt: "2026-10-06T04:05:00.000Z",
   ...over,
 });
 
