@@ -17,6 +17,7 @@ import {
   createPwRpaRouter,
   startPwExportSchedulers,
   startAdsBudgetScheduler,
+  startPwJobReaper,
 } from "./modules/pw-rpa/index.js";
 import { createPurchaseRouter } from "./modules/purchase/purchase.routes.js";
 import { createReplenishRouter } from "./modules/replenish/replenish.routes.js";
@@ -198,6 +199,7 @@ startStockScheduler({
 });
 startPwExportSchedulers();
 startAdsBudgetScheduler();
+startPwJobReaper();
 
 startMorningDigestScheduler(boundGetState, {
   storeEnabled: resolveBootEnabled("store-morning-digest"),

@@ -41,6 +41,15 @@ Cookie 分站点：Ad Manager ≠ Seller Lab。浏览器必须 `launch + storage
 
 同 profile 才互斥；`sales` 与 `ads`/`ads-budget` 可并行。实现：`apps/api/src/modules/pw-rpa/cli.ts` 的 `profilesForJob` / `isProfileBusy`。
 
+### Job 超时 / 杀树 / reaper
+
+| 能力 | 行为 |
+|------|------|
+| wall-clock 超时 | 所有 job；`ads-budget` = `max(15min, 60s×店 + 3s×上次todo + 5min)`，env `OUTPOST_PW_ADS_BUDGET_TIMEOUT_MS`；其它默认 30min（`OUTPOST_PW_JOB_TIMEOUT_MS`）；keepalive ui 仍用软探测短超时 |
+| 超时强杀 | Windows：`taskkill /PID … /T /F`（必须 `/T`，否则 Chromium 残留占 profile） |
+| reaper | API 启动后每 30s：`running\|starting` 且 pid 已死 → `failed`（「进程已消失」）；`getPwJobStatus` 纯读无副作用 |
+| 心跳 | 任意 stdout/stderr → 刷新 `lastHeartbeatAt` |
+
 定时保活已下线（不再自动弹 Chrome）；需续 cookie 时手工跑 `python main.py keepalive ui`。
 
 ## 生产调度范围
