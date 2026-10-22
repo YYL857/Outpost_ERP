@@ -296,50 +296,74 @@ function normalizeSlotRun(
   };
 }
 
+/** 纯读，不写盘。迁移在 startAdsBudgetScheduler → migrateOnStart 显式做一次。 */
 function load(): AdsBudgetScheduleState {
   const base = defaults();
   const p = configPath();
-  let merged: AdsBudgetScheduleState = { ...base };
-  if (existsSync(p)) {
-    try {
-      const raw = JSON.parse(
-        readFileSync(p, "utf8"),
-      ) as Partial<AdsBudgetScheduleState>;
-      merged = {
-        ...base,
-        ...raw,
-        shopIds:
-          Array.isArray(raw.shopIds) && raw.shopIds.length
-            ? raw.shopIds
-                .map((s) => String(s).trim().toUpperCase())
-                .filter(Boolean)
-            : base.shopIds,
-        slotRun: normalizeSlotRun(raw.slotRun) ?? null,
-      };
-    } catch {
-      merged = { ...base };
-    }
+  if (!existsSync(p)) return { ...base };
+  try {
+    const raw = JSON.parse(
+      readFileSync(p, "utf8"),
+    ) as Partial<AdsBudgetScheduleState>;
+    return {
+      ...base,
+      ...raw,
+      shopIds:
+        Array.isArray(raw.shopIds) && raw.shopIds.length
+          ? raw.shopIds.map((s) => String(s).trim().toUpperCase()).filter(Boolean)
+          : base.shopIds,
+      slotRun: normalizeSlotRun(raw.slotRun) ?? null,
+    };
+  } catch {
+    return { ...base };
   }
-  const today = shanghaiParts().day;
-  const migrated = migrateSlotRunFromLastDays({
-    slotRun: merged.slotRun,
-    lastPeakDay: merged.lastPeakDay,
-    lastOffpeakDay: merged.lastOffpeakDay,
-    lastRunAt: merged.lastRunAt,
-    today,
+}
+
+/**
+ * onJobFinish 收尾纯函数（「只跑一次」最后一道闸）。
+ * 匹配→写 done/failed；不匹配→原样；已终态→幂等不改。
+ */
+export function applySlotFinish(
+  state: AdsBudgetScheduleState,
+  info: {
+    runId: string;
+    status: "ok" | "failed";
+    finishedAt: string;
+    message: string | null;
+  },
+): { state: AdsBudgetScheduleState; applied: boolean } {
+  const sr = state.slotRun;
+  if (!sr || sr.runId !== info.runId) {
+    return { state, applied: false };
+  }
+  if ((sr.status === "done" || sr.status === "failed") && sr.finishedAt) {
+    return { state, applied: false };
+  }
+  const ok = info.status === "ok";
+  const days = slotDaysAfterFinish({
+    slot: sr.slot,
+    day: sr.day,
+    ok,
+    lastPeakDay: state.lastPeakDay,
+    lastOffpeakDay: state.lastOffpeakDay,
   });
-  if (migrated && !merged.slotRun) {
-    merged.slotRun = migrated;
-    try {
-      save(merged);
-      console.log(
-        `[ads-budget-sched] migrated slotRun=${migrated.slot}/${migrated.day} status=done from last*Day`,
-      );
-    } catch (e) {
-      console.log(`[ads-budget-sched] migrate save fail: ${e}`);
-    }
-  }
-  return merged;
+  return {
+    applied: true,
+    state: {
+      ...state,
+      slotRun: {
+        ...sr,
+        status: ok ? "done" : "failed",
+        finishedAt: info.finishedAt,
+      },
+      lastOk: ok,
+      lastRunAt: info.finishedAt,
+      lastMessage: info.message,
+      lastSlot: sr.slot,
+      lastPeakDay: days.lastPeakDay,
+      lastOffpeakDay: days.lastOffpeakDay,
+    },
+  };
 }
 
 function save(state: AdsBudgetScheduleState) {
@@ -381,35 +405,22 @@ function writeScheduleLastTxt(opts: {
 
 function applyJobFinish(info: JobFinishInfo) {
   const cfg = load();
-  if (!cfg.slotRun || cfg.slotRun.runId !== info.runId) return;
-  const slot = cfg.slotRun.slot;
-  const day = cfg.slotRun.day;
-  const ok = info.status === "ok";
-  cfg.slotRun = {
-    ...cfg.slotRun,
-    status: ok ? "done" : "failed",
+  const { state, applied } = applySlotFinish(cfg, {
+    runId: info.runId,
+    status: info.status,
     finishedAt: info.finishedAt,
-  };
-  cfg.lastOk = ok;
-  cfg.lastRunAt = info.finishedAt;
-  cfg.lastMessage = info.message;
-  cfg.lastSlot = slot;
-  const days = slotDaysAfterFinish({
-    slot,
-    day,
-    ok,
-    lastPeakDay: cfg.lastPeakDay,
-    lastOffpeakDay: cfg.lastOffpeakDay,
+    message: info.message,
   });
-  cfg.lastPeakDay = days.lastPeakDay;
-  cfg.lastOffpeakDay = days.lastOffpeakDay;
-  save(cfg);
+  if (!applied || !state.slotRun) return;
+  save(state);
+  const slot = state.slotRun.slot;
+  const ok = info.status === "ok";
   writeScheduleLastTxt({
     slot,
     ok,
     status: info.status,
     message: info.message,
-    shops: cfg.shopIds,
+    shops: state.shopIds,
     finishedAt: info.finishedAt,
   });
   console.log(
@@ -518,11 +529,38 @@ function fireSlot(slot: AdsBudgetSlot, day: string) {
   next.lastRunAt = run.startedAt || run.finishedAt || next.lastRunAt;
 
   if (run.status === "starting" || run.status === "running") {
+    // 假 runId 永远匹配不上 emit → slotRun 永久卡 running；宁可 failed 可补跑
+    if (!run.runId) {
+      const finishedAt = new Date().toISOString();
+      const msg = "startPwJob 未返回 runId";
+      next.slotRun = {
+        slot,
+        day,
+        runId: "missing-runId",
+        status: "failed",
+        startedAt: run.startedAt,
+        finishedAt,
+      };
+      next.lastOk = false;
+      next.lastRunAt = finishedAt;
+      next.lastMessage = msg;
+      save(next);
+      writeScheduleLastTxt({
+        slot,
+        ok: false,
+        status: "failed",
+        message: msg,
+        shops: cfg.shopIds,
+        finishedAt,
+      });
+      console.log(`[ads-budget-sched] ${slot} failed: ${msg}`);
+      return;
+    }
     // 启动成功立刻写 running（推翻「启动不写」）
     next.slotRun = {
       slot,
       day,
-      runId: run.runId || `pw-ads-budget-unknown`,
+      runId: run.runId,
       status: "running",
       startedAt: run.startedAt,
       finishedAt: null,
@@ -537,7 +575,7 @@ function fireSlot(slot: AdsBudgetSlot, day: string) {
   next.slotRun = {
     slot,
     day,
-    runId: run.runId || `pw-ads-budget-immediate`,
+    runId: run.runId || "immediate-no-runId",
     status: ok ? "done" : "failed",
     startedAt: run.startedAt,
     finishedAt,
@@ -668,6 +706,25 @@ function tick() {
   }
 }
 
+function migrateOnStart() {
+  const cfg = load();
+  if (cfg.slotRun) return;
+  const today = shanghaiParts().day;
+  const migrated = migrateSlotRunFromLastDays({
+    slotRun: null,
+    lastPeakDay: cfg.lastPeakDay,
+    lastOffpeakDay: cfg.lastOffpeakDay,
+    lastRunAt: cfg.lastRunAt,
+    today,
+  });
+  if (!migrated) return;
+  cfg.slotRun = migrated;
+  save(cfg);
+  console.log(
+    `[ads-budget-sched] migrated slotRun=${migrated.slot}/${migrated.day} status=done from last*Day`,
+  );
+}
+
 function reconcileOnStart() {
   const cfg = load();
   const mem = getPwJobStatus("ads-budget");
@@ -695,6 +752,11 @@ export function startAdsBudgetScheduler(opts?: { enabled?: boolean }) {
   save(cfg);
   stopAdsBudgetScheduler();
   ensureFinishSubscription();
+  try {
+    migrateOnStart();
+  } catch (e) {
+    console.log(`[ads-budget-sched] migrate error: ${e}`);
+  }
   try {
     reconcileOnStart();
   } catch (e) {
