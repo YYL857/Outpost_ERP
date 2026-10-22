@@ -25,7 +25,8 @@ import asyncio
 import json
 import os
 import sys
-from datetime import datetime
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -133,10 +134,15 @@ async def _run_for_shops(cmd: str, args: argparse.Namespace) -> tuple[int, str]:
     log(f"shops={shops} cmd={cmd} mode={mode} dry_run={args.dry_run}")
 
     headed = not headless_default()
+    started_mono = time.monotonic()
+    started_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     async def fn(context, page):
         results = []
         for sid in shops:
+            shop_t0 = time.monotonic()
+            scrape_ms = 0
+            apply_ms = 0
             log(f"==== shop {sid} ====")
             try:
                 await open_shop_campaigns(page, sid)
@@ -144,10 +150,18 @@ async def _run_for_shops(cmd: str, args: argparse.Namespace) -> tuple[int, str]:
                 if cmd == "probe":
                     info = await probe_page(page)
                     log(json.dumps(info, ensure_ascii=False, indent=2))
-                    results.append({"shopId": sid, "probe": info})
+                    results.append(
+                        {
+                            "shopId": sid,
+                            "probe": info,
+                            "durationMs": int((time.monotonic() - shop_t0) * 1000),
+                        }
+                    )
                     continue
 
+                scrape_t0 = time.monotonic()
                 live = await scrape_live_campaigns(page)
+                scrape_ms = int((time.monotonic() - scrape_t0) * 1000)
                 if not live and cmd in ("sync", "apply"):
                     # 避免登录墙下「0 行却当成功」
                     raise RuntimeError(
@@ -163,7 +177,15 @@ async def _run_for_shops(cmd: str, args: argparse.Namespace) -> tuple[int, str]:
                     )
                     path = save_baseline(sid, rows)
                     log(f"sync stats={stats} → {path}")
-                    results.append({"shopId": sid, "stats": stats, "path": str(path)})
+                    results.append(
+                        {
+                            "shopId": sid,
+                            "stats": stats,
+                            "path": str(path),
+                            "durationMs": int((time.monotonic() - shop_t0) * 1000),
+                            "scrapeMs": scrape_ms,
+                        }
+                    )
                     continue
 
                 # apply：先轻量刷新 lastSeen（不改 baseline）
@@ -175,31 +197,65 @@ async def _run_for_shops(cmd: str, args: argparse.Namespace) -> tuple[int, str]:
 
                 if mode == "idle":
                     log("mode=idle，不改预算")
-                    results.append({"shopId": sid, "mode": "idle", "skipped": True})
+                    results.append(
+                        {
+                            "shopId": sid,
+                            "mode": "idle",
+                            "skipped": True,
+                            "durationMs": int((time.monotonic() - shop_t0) * 1000),
+                            "scrapeMs": scrape_ms,
+                        }
+                    )
                     continue
 
                 only_failed = load_failed_ids(sid) if args.only_failed else None
                 if args.only_failed and not only_failed:
                     log("only-failed 但无失败记录，跳过")
-                    results.append({"shopId": sid, "onlyFailedEmpty": True})
+                    results.append(
+                        {
+                            "shopId": sid,
+                            "onlyFailedEmpty": True,
+                            "durationMs": int((time.monotonic() - shop_t0) * 1000),
+                            "scrapeMs": scrape_ms,
+                        }
+                    )
                     continue
 
                 plan = plan_changes(rows, mode, only_failed_ids=only_failed)  # type: ignore[arg-type]
+                needs_baseline_n = sum(
+                    1
+                    for item in plan
+                    if item.get("skip") and item.get("reason") == "needs_baseline"
+                )
                 for item in plan:
                     tag = "SKIP" if item.get("skip") else "SET"
                     log(
                         f"  {tag} {item.get('psku')} {item['campaignId']} "
                         f"{item.get('from')} → {item.get('to')} {item.get('reason') or ''}"
                     )
+                apply_t0 = time.monotonic()
                 summary = await apply_plan(
                     page, sid, mode, plan, dry_run=bool(args.dry_run)  # type: ignore[arg-type]
                 )
+                apply_ms = int((time.monotonic() - apply_t0) * 1000)
+                summary["durationMs"] = int((time.monotonic() - shop_t0) * 1000)
+                summary["scrapeMs"] = scrape_ms
+                summary["applyMs"] = apply_ms
+                summary["needsBaselineCount"] = needs_baseline_n
                 results.append(summary)
                 if summary.get("failed"):
                     log(f"shop {sid} 有 {summary['failed']} 条失败")
             except Exception as e:
                 log(f"shop {sid} ERROR: {e}")
-                results.append({"shopId": sid, "error": str(e)})
+                results.append(
+                    {
+                        "shopId": sid,
+                        "error": str(e),
+                        "durationMs": int((time.monotonic() - shop_t0) * 1000),
+                        "scrapeMs": scrape_ms,
+                        "applyMs": apply_ms,
+                    }
+                )
         return results
 
     results = await with_browser(
@@ -208,12 +264,18 @@ async def _run_for_shops(cmd: str, args: argparse.Namespace) -> tuple[int, str]:
         headed=headed,
         fn=fn,
     )
+    duration_ms = int((time.monotonic() - started_mono) * 1000)
     fail = sum(1 for r in (results or []) if r.get("error") or (r.get("failed") or 0) > 0)
     err_blob = " ".join(
         str(r.get("error") or "") for r in (results or []) if r.get("error")
     )
     ok_n = sum(int(r.get("ok") or 0) for r in (results or []) if isinstance(r, dict))
     fail_n = sum(int(r.get("failed") or 0) for r in (results or []) if isinstance(r, dict))
+    needs_baseline_total = sum(
+        int(r.get("needsBaselineCount") or 0)
+        for r in (results or [])
+        if isinstance(r, dict)
+    )
     # 写总日志（单次快照）
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -228,7 +290,7 @@ async def _run_for_shops(cmd: str, args: argparse.Namespace) -> tuple[int, str]:
     trigger = (os.environ.get("OUTPOST_ADS_BUDGET_TRIGGER") or "manual").strip() or "manual"
     msg = (
         f"{cmd}/{mode} ok={fail == 0} shops={len(shops)} "
-        f"applyOk={ok_n} applyFail={fail_n}"
+        f"applyOk={ok_n} applyFail={fail_n} needsBaseline={needs_baseline_total}"
         + (f" err={err_blob[:120]}" if err_blob else "")
     )
     hist = record_run(
@@ -242,6 +304,9 @@ async def _run_for_shops(cmd: str, args: argparse.Namespace) -> tuple[int, str]:
             "message": msg,
             "applyOk": ok_n,
             "applyFailed": fail_n,
+            "needsBaselineCount": needs_baseline_total,
+            "startedAt": started_at,
+            "durationMs": duration_ms,
             "error": err_blob or None,
             "snapshotLog": str(out),
             "results": results,

@@ -27,6 +27,7 @@ import {
   importBaselineBudgets,
   listBaseline,
   listBudgetProductMeta,
+  listNeedsBaseline,
   patchBaselineRow,
   upsertBaselineRow,
   type AdsBudgetImportItem,
@@ -205,6 +206,30 @@ export function createPwRpaRouter() {
     } catch (e) {
       res.status(500).json({
         error: e instanceof Error ? e.message : "读 ads-budget-runs 失败",
+      });
+    }
+  });
+
+  /** 巡检：needsBaseline=1 汇总（默认定时配置里的店） */
+  router.get("/ads-budget/health", (req, res) => {
+    try {
+      const sched = getAdsBudgetSchedulerStatus();
+      const q = String(req.query.shopId || "").trim();
+      const shopIds = q
+        ? [q.toUpperCase()]
+        : sched.shopIds?.length
+          ? sched.shopIds
+          : [ADS_BUDGET_PILOT];
+      res.json({
+        data: {
+          ...listNeedsBaseline(shopIds),
+          shopIds,
+          note: "needsBaseline>0 的活动 peak 永久跳过；须在权威预算表补齐高峰目标",
+        },
+      });
+    } catch (e) {
+      res.status(500).json({
+        error: e instanceof Error ? e.message : "ads-budget health 失败",
       });
     }
   });

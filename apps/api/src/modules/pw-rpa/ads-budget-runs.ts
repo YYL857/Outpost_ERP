@@ -8,6 +8,9 @@ import { resolveOutpostDataRoot } from "./outpost-data-root.js";
 export type AdsBudgetRunRow = {
   finishedAt?: string;
   finishedAtCst?: string;
+  startedAt?: string;
+  durationMs?: number;
+  needsBaselineCount?: number;
   ok?: boolean;
   cmd?: string;
   mode?: string;
