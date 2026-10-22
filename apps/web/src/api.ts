@@ -108,6 +108,8 @@ export type PwJobStatus = {
   exitCode: number | null;
   message: string | null;
   runId: string | null;
+  /** 最近 stdout/stderr；巡检区分假 running */
+  lastHeartbeatAt?: string | null;
   taskId?: string | null;
   opts?: {
     shopIds?: string[];
