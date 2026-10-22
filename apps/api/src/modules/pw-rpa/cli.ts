@@ -15,6 +15,15 @@ import {
   type AdsRangeResolved,
 } from "./ads-range.js";
 import { isExportJob, upsertRunLog } from "./run-log.js";
+import {
+  clearStaleChromiumProfileLocks,
+  countShopsFromEnvOrList,
+  defaultAdsProfileDir,
+  defaultSellerProfileDir,
+  isPidAlive,
+  killProcessTree,
+  resolveJobTimeoutMs,
+} from "./job-lifecycle.js";
 
 export const PW_JOBS = ["ads", "sales", "keepalive", "ads-budget"] as const;
 export type PwJobName = (typeof PW_JOBS)[number];
@@ -45,6 +54,8 @@ export type PwJobRun = {
   message: string | null;
   runId: string | null;
   opts: PwJobOpts | null;
+  /** 最近一次 stdout/stderr 输出；reaper/巡检区分「在跑」与「假在跑」 */
+  lastHeartbeatAt: string | null;
 };
 
 const lastByJob = new Map<PwJobName, PwJobRun>();
@@ -60,6 +71,7 @@ function emptyRun(job: PwJobName): PwJobRun {
     message: null,
     runId: null,
     opts: null,
+    lastHeartbeatAt: null,
   };
 }
 
@@ -250,6 +262,7 @@ export function startPwJob(job: PwJobName, opts: PwJobOpts = {}): PwJobRun {
       dryRun: opts.dryRun,
       trigger,
     },
+    lastHeartbeatAt: startedAt,
   };
   lastByJob.set(job, run);
   if (isExportJob(job)) upsertRunLog(run, { trigger });
@@ -301,6 +314,23 @@ export function startPwJob(job: PwJobName, opts: PwJobOpts = {}): PwJobRun {
     if (opts.dryRun) pyArgs.push("--dry-run");
     if (opts.refreshBaseline) pyArgs.push("--refresh-baseline");
   }
+  // 启动前清指向已死 pid 的 Chromium Singleton*；活锁不动
+  for (const key of profilesForJob(job)) {
+    const profileDir =
+      key === PW_PROFILE_ADS
+        ? defaultAdsProfileDir()
+        : key === PW_PROFILE_SELLER
+          ? defaultSellerProfileDir()
+          : "";
+    if (!profileDir) continue;
+    const { cleared } = clearStaleChromiumProfileLocks(profileDir);
+    if (cleared.length) {
+      console.log(
+        `[pw-rpa] cleared stale profile locks profile=${profileDir} files=${cleared.join(",")}`,
+      );
+    }
+  }
+
   const child = spawn(pythonBin(), pyArgs, {
     cwd: dir,
     windowsHide: true,
@@ -310,6 +340,7 @@ export function startPwJob(job: PwJobName, opts: PwJobOpts = {}): PwJobRun {
 
   run.status = "running";
   run.pid = child.pid ?? null;
+  run.lastHeartbeatAt = new Date().toISOString();
   run.message =
     job === "keepalive" && cmd === "ui"
       ? `软探测进行中（pid=${run.pid ?? "?"}）：先查本地 cookie，再短时无头探 Noon…`
@@ -318,20 +349,25 @@ export function startPwJob(job: PwJobName, opts: PwJobOpts = {}): PwJobRun {
 
   let stdout = "";
   let stderr = "";
+  /** 全 job 刷新心跳；keepalive 额外把末行写进 message（原行为） */
   const bumpProgress = (chunk: string) => {
-    if (job !== "keepalive") return;
-    const lines = chunk
-      .split(/\r?\n/)
-      .map((l) => l.trim())
-      .filter(Boolean);
-    const last = lines[lines.length - 1];
-    if (!last) return;
     const cur = lastByJob.get(job);
     if (!cur || cur.runId !== runId || cur.status !== "running") return;
-    lastByJob.set(job, {
-      ...cur,
-      message: last.slice(0, 220),
-    });
+    const now = new Date().toISOString();
+    if (job === "keepalive") {
+      const lines = chunk
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter(Boolean);
+      const last = lines[lines.length - 1];
+      lastByJob.set(job, {
+        ...cur,
+        lastHeartbeatAt: now,
+        ...(last ? { message: last.slice(0, 220) } : {}),
+      });
+      return;
+    }
+    lastByJob.set(job, { ...cur, lastHeartbeatAt: now });
   };
   child.stdout?.on("data", (buf: Buffer) => {
     const text = buf.toString("utf8");
@@ -344,30 +380,47 @@ export function startPwJob(job: PwJobName, opts: PwJobOpts = {}): PwJobRun {
     bumpProgress(text);
   });
 
-  // 软探测不得永久「运行中」：超时杀进程
-  const softProbeMs =
-    job === "keepalive" && cmd === "ui"
-      ? Math.max(20_000, Number(process.env.OUTPOST_PW_SOFT_PROBE_MS) || 80_000)
-      : 0;
+  // wall-clock 超时：杀进程树（Windows taskkill /T），清掉 running，避免永久停摆
+  const shopCount = countShopsFromEnvOrList(
+    shopIds.length ? shopIds : undefined,
+    env.OUTPOST_ADS_BUDGET_SHOPS,
+  );
+  const timeoutMs = resolveJobTimeoutMs(job, { cmd, shopCount });
   let killTimer: ReturnType<typeof setTimeout> | null = null;
-  if (softProbeMs > 0) {
+  if (timeoutMs > 0) {
     killTimer = setTimeout(() => {
       const cur = lastByJob.get(job);
       if (!cur || cur.runId !== runId) return;
       if (cur.status !== "running" && cur.status !== "starting") return;
-      try {
-        child.kill();
-      } catch {
-        /* ignore */
+      const pid = cur.pid ?? child.pid ?? null;
+      if (pid) {
+        try {
+          killProcessTree(pid);
+        } catch {
+          /* ignore */
+        }
+      } else {
+        try {
+          child.kill();
+        } catch {
+          /* ignore */
+        }
       }
-      lastByJob.set(job, {
+      const soft =
+        job === "keepalive" && cmd === "ui"
+          ? "软探测超时已强制结束（Noon 网络差时常见）。本地 cookie 可点「重新检查」；不必一直等。"
+          : `超时强杀（wall-clock ${Math.round(timeoutMs / 1000)}s，已 taskkill /T）${
+              pid ? ` pid=${pid}` : ""
+            }`;
+      const failed = {
         ...cur,
-        status: "failed",
+        status: "failed" as const,
         finishedAt: new Date().toISOString(),
-        message:
-          "软探测超时已强制结束（Noon 网络差时常见）。本地 cookie 可点「重新检查」；不必一直等。",
-      });
-    }, softProbeMs);
+        message: soft,
+      };
+      lastByJob.set(job, failed);
+      if (isExportJob(job)) upsertRunLog(failed, { trigger });
+    }, timeoutMs);
   }
 
   child.on("error", (err) => {
@@ -427,6 +480,60 @@ export function startPwJob(job: PwJobName, opts: PwJobOpts = {}): PwJobRun {
   });
 
   return getPwJobStatus(job);
+}
+
+let reaperTimer: ReturnType<typeof setInterval> | null = null;
+
+/** 状态自愈：running/starting 但 pid 已死 → failed。不碰 hang（pid 仍活交给超时）。 */
+export function reapDeadPwJobs(): number {
+  let n = 0;
+  for (const j of PW_JOBS) {
+    const st = lastByJob.get(j);
+    if (!st) continue;
+    if (st.status !== "running" && st.status !== "starting") continue;
+    const pid = st.pid;
+    if (pid == null) continue;
+    if (isPidAlive(pid)) continue;
+    const failed: PwJobRun = {
+      ...st,
+      status: "failed",
+      finishedAt: new Date().toISOString(),
+      message: `进程已消失（疑似崩溃/被杀）pid=${pid}`,
+    };
+    lastByJob.set(j, failed);
+    if (isExportJob(j)) {
+      upsertRunLog(failed, {
+        trigger: st.opts?.trigger === "schedule" ? "schedule" : "manual",
+      });
+    }
+    n += 1;
+    console.log(`[pw-rpa] reaper: ${j} runId=${st.runId} pid=${pid} → failed`);
+  }
+  return n;
+}
+
+export function startPwJobReaper(): void {
+  if (reaperTimer) return;
+  reaperTimer = setInterval(() => {
+    try {
+      reapDeadPwJobs();
+    } catch (e) {
+      console.log(`[pw-rpa] reaper error: ${e}`);
+    }
+  }, 30_000);
+  reaperTimer.unref?.();
+  console.log("[pw-rpa] job reaper started (30s)");
+}
+
+export function stopPwJobReaper(): void {
+  if (!reaperTimer) return;
+  clearInterval(reaperTimer);
+  reaperTimer = null;
+}
+
+/** 测试用：写入一条 job 状态（勿用于生产路径） */
+export function __setPwJobRunForTest(run: PwJobRun): void {
+  lastByJob.set(run.job, { ...run, opts: run.opts ? { ...run.opts } : null });
 }
 
 export function mapPwRunToRequestStatus(

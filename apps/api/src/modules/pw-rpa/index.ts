@@ -5,7 +5,15 @@ export {
   mapPwRunToRequestStatus,
   isPwJobName,
   PW_JOBS,
+  startPwJobReaper,
+  stopPwJobReaper,
+  reapDeadPwJobs,
 } from "./cli.js";
+export {
+  resolveJobTimeoutMs,
+  killProcessTree,
+  isPidAlive,
+} from "./job-lifecycle.js";
 export {
   startPwKeepaliveScheduler,
   getPwKeepaliveSchedulerStatus,
