@@ -18,12 +18,8 @@ const DEFAULT_EXPORT_MS = 90 * 60_000;
 const DEFAULT_JOB_MS = 30 * 60_000;
 const ADS_BUDGET_MARGIN_MS = 5 * 60_000;
 
-const LOCK_NAMES = [
-  "SingletonLock",
-  "SingletonCookie",
-  "SingletonSocket",
-  "lockfile",
-] as const;
+/** Windows Chromium 用独占打开加锁；Cookie/Socket/lockfile 是 POSIX 产物，先不动 */
+const LOCK_NAMES = ["SingletonLock"] as const;
 
 /** 上次 apply 的 todo 近似：applyOk+applyFailed；无历史则 0 */
 export function estimateLastAdsBudgetTodo(): number {
@@ -153,17 +149,20 @@ export function parsePidFromLockTarget(target: string): number | null {
 }
 
 /**
- * 清掉 profile 目录里指向已死 pid 的 Singleton* / lockfile。
- * 活着的锁不动（避免误伤正在跑的 Chromium）。
+ * 清掉 profile 下指向已死 pid 的 SingletonLock。
+ * Windows 上该文件通常是普通文件（非 symlink），解析不出 pid 时**跳过并打日志**，
+ * 不赌 OS sharing violation；活锁更不能动。
  */
 export function clearStaleChromiumProfileLocks(profileDir: string): {
   cleared: string[];
   skippedLive: string[];
+  skippedUnknown: string[];
 } {
   const cleared: string[] = [];
   const skippedLive: string[] = [];
+  const skippedUnknown: string[] = [];
   if (!profileDir || !existsSync(profileDir)) {
-    return { cleared, skippedLive };
+    return { cleared, skippedLive, skippedUnknown };
   }
   for (const name of LOCK_NAMES) {
     const p = join(profileDir, name);
@@ -175,9 +174,16 @@ export function clearStaleChromiumProfileLocks(profileDir: string): {
         pid = parsePidFromLockTarget(readlinkSync(p));
       }
     } catch {
-      /* 读不到就按陈旧处理 */
+      /* 读链接失败 → 下方按 unknown 跳过 */
     }
-    if (pid != null && isPidAlive(pid)) {
+    if (pid == null) {
+      skippedUnknown.push(name);
+      console.log(
+        `[pw-rpa] skip profile lock (no pid; Windows SingletonLock is often a plain file): ${p}`,
+      );
+      continue;
+    }
+    if (isPidAlive(pid)) {
       skippedLive.push(name);
       continue;
     }
@@ -188,7 +194,7 @@ export function clearStaleChromiumProfileLocks(profileDir: string): {
       /* busy / permission — 下一轮再试 */
     }
   }
-  return { cleared, skippedLive };
+  return { cleared, skippedLive, skippedUnknown };
 }
 
 export function defaultAdsProfileDir(): string {
