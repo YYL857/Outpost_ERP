@@ -79,12 +79,40 @@ export function listPwJobStatus(): PwJobRun[] {
   return PW_JOBS.map((j) => getPwJobStatus(j));
 }
 
-function anyRunning(): PwJobRun | null {
+/** Chromium user-data-dir 短名；与 runtime.py ADS_PROFILE / SELLER_PROFILE 目录名对齐 */
+export const PW_PROFILE_ADS = "noon-ads-pw";
+export const PW_PROFILE_SELLER = "noon-seller-pw";
+
+/**
+ * 每个 job 实际占用的 profile。互斥按 profile 走，不按 job 全局互斥。
+ * keepalive 两边都碰，故两个 key 都占。
+ */
+export function profilesForJob(job: PwJobName): readonly string[] {
+  switch (job) {
+    case "ads":
+    case "ads-budget":
+      return [PW_PROFILE_ADS];
+    case "sales":
+      return [PW_PROFILE_SELLER];
+    case "keepalive":
+      return [PW_PROFILE_ADS, PW_PROFILE_SELLER];
+  }
+}
+
+export function profilesOverlap(
+  a: readonly string[],
+  b: readonly string[],
+): boolean {
+  return a.some((k) => b.includes(k));
+}
+
+/** 同 profile 已有 starting/running 则返回占坑的那条；不同 profile 可并行 */
+function isProfileBusy(forJob: PwJobName): PwJobRun | null {
+  const need = profilesForJob(forJob);
   for (const j of PW_JOBS) {
     const st = lastByJob.get(j);
-    if (st && (st.status === "starting" || st.status === "running")) {
-      return clone(st);
-    }
+    if (!st || (st.status !== "starting" && st.status !== "running")) continue;
+    if (profilesOverlap(need, profilesForJob(j))) return clone(st);
   }
   return null;
 }
@@ -119,7 +147,7 @@ const HINT: Record<PwJobName, { starting: string; done: string }> = {
 
 export function startPwJob(job: PwJobName, opts: PwJobOpts = {}): PwJobRun {
   const trigger = opts.trigger === "schedule" ? "schedule" : "manual";
-  const busy = anyRunning();
+  const busy = isProfileBusy(job);
   if (busy) {
     if (busy.job === job) return getPwJobStatus(job);
     const failed: PwJobRun = {

@@ -31,6 +31,16 @@ API（需 admin）：`POST /api/pw-rpa/:job/run`，`GET /api/pw-rpa/:job/status`
 Cookie 分站点：Ad Manager ≠ Seller Lab。浏览器必须 `launch + storage_state`。  
 桥接库：`D:\YingDao\Flows\_lib\outpost_bridge.py`（历史目录名；原始表/规范 CSV 暂存其 Downloads/Exports，**权威入库**为各店 `portal-imports`）。
 
+### Job 互斥（按 profile，不是按 job 全局）
+
+| job | profileKey |
+|-----|------------|
+| `ads` / `ads-budget` | `noon-ads-pw` |
+| `sales` | `noon-seller-pw` |
+| `keepalive` | 两个都占 |
+
+同 profile 才互斥；`sales` 与 `ads`/`ads-budget` 可并行。实现：`apps/api/src/modules/pw-rpa/cli.ts` 的 `profilesForJob` / `isProfileBusy`。
+
 定时保活已下线（不再自动弹 Chrome）；需续 cookie 时手工跑 `python main.py keepalive ui`。
 
 ## 生产调度范围
