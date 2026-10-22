@@ -33,6 +33,7 @@ export {
 export {
   listBaseline,
   listBudgetProductMeta,
+  listNeedsBaseline,
   patchBaselineRow,
   upsertBaselineRow,
   deleteBaselineRow,

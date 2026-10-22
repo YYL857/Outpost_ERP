@@ -144,6 +144,9 @@ export type AdsBudgetScheduleStatus = {
 export type AdsBudgetLastRun = {
   finishedAt?: string;
   finishedAtCst?: string;
+  startedAt?: string;
+  durationMs?: number;
+  needsBaselineCount?: number;
   ok?: boolean;
   cmd?: string;
   mode?: string;
@@ -173,6 +176,9 @@ export type AdsBudgetRunCampaignChange = {
 export type AdsBudgetRunRow = {
   finishedAt?: string;
   finishedAtCst?: string;
+  startedAt?: string;
+  durationMs?: number;
+  needsBaselineCount?: number;
   ok?: boolean;
   cmd?: string;
   mode?: string;
@@ -189,6 +195,10 @@ export type AdsBudgetRunRow = {
     shopId?: string;
     error?: string;
     mode?: string;
+    durationMs?: number;
+    scrapeMs?: number;
+    applyMs?: number;
+    needsBaselineCount?: number;
     planned?: number;
     todo?: number;
     skipped?: number;
@@ -4199,6 +4209,20 @@ export const api = {
     return request<{
       data: { items: AdsBudgetRunRow[]; total: number; path: string };
     }>(`/pw-rpa/ads-budget/runs${qs ? `?${qs}` : ""}`);
+  },
+  getAdsBudgetHealth: (shopId?: string) => {
+    const q = shopId ? `?shopId=${encodeURIComponent(shopId)}` : "";
+    return request<{
+      data: {
+        needsBaseline: Array<{
+          shopId: string;
+          count: number;
+          campaigns: string[];
+        }>;
+        shopIds: string[];
+        note?: string;
+      };
+    }>(`/pw-rpa/ads-budget/health${q}`);
   },
   getAdsBudgetBaseline: (shopId?: string) => {
     const q = shopId ? `?shopId=${encodeURIComponent(shopId)}` : "";

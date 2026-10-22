@@ -213,6 +213,31 @@ export function listBaseline(shopId: string) {
   };
 }
 
+/** 巡检：各店 needsBaseline=1 的活动（peak 永久跳过的静默漏点） */
+export function listNeedsBaseline(shopIds: string[]): {
+  needsBaseline: Array<{
+    shopId: string;
+    count: number;
+    campaigns: string[];
+  }>;
+} {
+  const out: Array<{ shopId: string; count: number; campaigns: string[] }> = [];
+  for (const raw of shopIds) {
+    const sid = String(raw || "")
+      .trim()
+      .toUpperCase();
+    if (!sid) continue;
+    const rows = loadBaseline(sid).filter((r) => r.needsBaseline);
+    if (!rows.length) continue;
+    out.push({
+      shopId: sid,
+      count: rows.length,
+      campaigns: rows.map((r) => r.campaignId),
+    });
+  }
+  return { needsBaseline: out };
+}
+
 export type AdsBudgetProductMeta = {
   title: string;
   imageUrl: string;

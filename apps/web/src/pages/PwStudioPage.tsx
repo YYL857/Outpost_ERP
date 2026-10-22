@@ -444,6 +444,47 @@ function fmtDur(ms: number | null | undefined): string {
   return r ? `${m} 分 ${r} 秒` : `${m} 分`;
 }
 
+/** 总耗时 ≠ scrape+apply：差值是进店/换店等固定开销，须标清避免当成漏算 */
+function budgetRunTimingLines(row: AdsBudgetRunRow): string[] {
+  const lines: string[] = [];
+  if (row.durationMs != null) {
+    lines.push(`总耗时 ${fmtDur(row.durationMs)}`);
+  }
+  const shops = (row.results || []).filter(
+    (r) =>
+      r &&
+      (r.scrapeMs != null || r.applyMs != null || r.durationMs != null),
+  );
+  for (const s of shops) {
+    const sid = s.shopId || "店";
+    const scrape = s.scrapeMs ?? 0;
+    const apply = s.applyMs ?? 0;
+    const shopDur = s.durationMs;
+    const parts = [
+      s.scrapeMs != null ? `抓取 ${fmtDur(s.scrapeMs)}` : null,
+      s.applyMs != null ? `改价 ${fmtDur(s.applyMs)}` : null,
+    ].filter(Boolean);
+    if (shopDur != null && (s.scrapeMs != null || s.applyMs != null)) {
+      const misc = Math.max(0, shopDur - scrape - apply);
+      parts.push(`页面/杂项 ${fmtDur(misc)}`);
+    } else if (shopDur != null) {
+      parts.push(`店内 ${fmtDur(shopDur)}`);
+    }
+    if (parts.length) lines.push(`${sid}：${parts.join(" · ")}`);
+  }
+  if (row.needsBaselineCount != null) {
+    const n = row.needsBaselineCount;
+    if (row.mode === "offpeak") {
+      lines.push(
+        `缺 baseline 计数 ${n}（offpeak 恒为 0；漏点看 peak 或健康检查）`,
+      );
+    } else {
+      lines.push(`缺 baseline ${n}`);
+    }
+  }
+  return lines;
+}
+
 function statusLogZh(s: string): string {
   if (s === "ok") return "成功";
   if (s === "failed") return "失败";
@@ -1610,6 +1651,14 @@ export function PwStudioPage({ onExit, shops: shopsFromApp = [] }: Props) {
                                   <p className="pws-budget-run-fulltitle">
                                     {budgetRunTitle(row)}
                                   </p>
+                                  {(() => {
+                                    const timing = budgetRunTimingLines(row);
+                                    return timing.length ? (
+                                      <p className="pws-budget-run-timing muted">
+                                        {timing.join(" · ")}
+                                      </p>
+                                    ) : null;
+                                  })()}
                                   {shopErr?.error ? (
                                     <div className="pws-budget-run-failbox">
                                       <span className="pws-label">失败原因</span>
