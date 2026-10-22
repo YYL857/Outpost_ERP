@@ -16,7 +16,10 @@ import {
 } from "./ads-range.js";
 import { isExportJob, upsertRunLog } from "./run-log.js";
 import {
+  clearStaleChromiumProfileLocks,
   countShopsFromEnvOrList,
+  defaultAdsProfileDir,
+  defaultSellerProfileDir,
   isPidAlive,
   killProcessTree,
   resolveJobTimeoutMs,
@@ -311,6 +314,23 @@ export function startPwJob(job: PwJobName, opts: PwJobOpts = {}): PwJobRun {
     if (opts.dryRun) pyArgs.push("--dry-run");
     if (opts.refreshBaseline) pyArgs.push("--refresh-baseline");
   }
+  // 启动前清指向已死 pid 的 Chromium Singleton*；活锁不动
+  for (const key of profilesForJob(job)) {
+    const profileDir =
+      key === PW_PROFILE_ADS
+        ? defaultAdsProfileDir()
+        : key === PW_PROFILE_SELLER
+          ? defaultSellerProfileDir()
+          : "";
+    if (!profileDir) continue;
+    const { cleared } = clearStaleChromiumProfileLocks(profileDir);
+    if (cleared.length) {
+      console.log(
+        `[pw-rpa] cleared stale profile locks profile=${profileDir} files=${cleared.join(",")}`,
+      );
+    }
+  }
+
   const child = spawn(pythonBin(), pyArgs, {
     cwd: dir,
     windowsHide: true,
@@ -509,6 +529,11 @@ export function stopPwJobReaper(): void {
   if (!reaperTimer) return;
   clearInterval(reaperTimer);
   reaperTimer = null;
+}
+
+/** 测试用：写入一条 job 状态（勿用于生产路径） */
+export function __setPwJobRunForTest(run: PwJobRun): void {
+  lastByJob.set(run.job, { ...run, opts: run.opts ? { ...run.opts } : null });
 }
 
 export function mapPwRunToRequestStatus(

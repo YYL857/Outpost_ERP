@@ -45,10 +45,13 @@ Cookie 分站点：Ad Manager ≠ Seller Lab。浏览器必须 `launch + storage
 
 | 能力 | 行为 |
 |------|------|
-| wall-clock 超时 | 所有 job；`ads-budget` = `max(15min, 60s×店 + 3s×上次todo + 5min)`，env `OUTPOST_PW_ADS_BUDGET_TIMEOUT_MS`；其它默认 30min（`OUTPOST_PW_JOB_TIMEOUT_MS`）；keepalive ui 仍用软探测短超时 |
-| 超时强杀 | Windows：`taskkill /PID … /T /F`（必须 `/T`，否则 Chromium 残留占 profile） |
+| wall-clock 超时 | 所有 job；`ads-budget` = `max(15min, 60s×店 + 3s×上次todo + 5min)`（`OUTPOST_PW_ADS_BUDGET_TIMEOUT_MS`）；`ads`/`sales` 默认 **90min**（`OUTPOST_PW_EXPORT_TIMEOUT_MS`）；其它默认 30min（`OUTPOST_PW_JOB_TIMEOUT_MS`）；keepalive ui 仍用软探测短超时 |
+| 超时强杀 | Windows：异步 `taskkill /PID … /T /F`（必须 `/T`；不 `spawnSync`，避免堵事件循环） |
 | reaper | API 启动后每 30s：`running\|starting` 且 pid 已死 → `failed`（「进程已消失」）；`getPwJobStatus` 纯读无副作用 |
+| 启动前清锁 | 检查 profile 下 `SingletonLock` 等；指向的 pid 已死则删除，活锁不动 |
 | 心跳 | 任意 stdout/stderr → 刷新 `lastHeartbeatAt` |
+
+**行为说明（PR1）**：互斥按 profile，不是「零行为变化」——`ads` 与 `sales` 可并行（不同 profile）；同 profile（如 `ads`∥`ads-budget`）仍互斥。
 
 定时保活已下线（不再自动弹 Chrome）；需续 cookie 时手工跑 `python main.py keepalive ui`。
 

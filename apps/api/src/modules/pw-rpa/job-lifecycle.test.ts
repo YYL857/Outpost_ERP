@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import {
   countShopsFromEnvOrList,
   isPidAlive,
+  parsePidFromLockTarget,
   resolveJobTimeoutMs,
 } from "./job-lifecycle.js";
 
@@ -63,20 +64,31 @@ assert.equal(countShopsFromEnvOrList(undefined, ""), 1);
   else process.env.OUTPOST_PW_ADS_BUDGET_TIMEOUT_MS = prev;
 }
 
-// 其它 job 默认 30min
+// ads/sales 默认 90min（无历史最长耗时，不用 30min）
 {
-  const prev = process.env.OUTPOST_PW_JOB_TIMEOUT_MS;
+  const prevExport = process.env.OUTPOST_PW_EXPORT_TIMEOUT_MS;
+  const prevJob = process.env.OUTPOST_PW_JOB_TIMEOUT_MS;
+  delete process.env.OUTPOST_PW_EXPORT_TIMEOUT_MS;
   delete process.env.OUTPOST_PW_JOB_TIMEOUT_MS;
   assert.equal(
     resolveJobTimeoutMs("ads", { cmd: "ui", shopCount: 1 }),
-    30 * 60_000,
+    90 * 60_000,
   );
-  if (prev === undefined) delete process.env.OUTPOST_PW_JOB_TIMEOUT_MS;
-  else process.env.OUTPOST_PW_JOB_TIMEOUT_MS = prev;
+  assert.equal(
+    resolveJobTimeoutMs("sales", { cmd: "ui", shopCount: 1 }),
+    90 * 60_000,
+  );
+  if (prevExport === undefined) delete process.env.OUTPOST_PW_EXPORT_TIMEOUT_MS;
+  else process.env.OUTPOST_PW_EXPORT_TIMEOUT_MS = prevExport;
+  if (prevJob === undefined) delete process.env.OUTPOST_PW_JOB_TIMEOUT_MS;
+  else process.env.OUTPOST_PW_JOB_TIMEOUT_MS = prevJob;
 }
 
 assert.equal(isPidAlive(process.pid), true);
 assert.equal(isPidAlive(0), false);
 assert.equal(isPidAlive(-1), false);
+
+assert.equal(parsePidFromLockTarget("DESKTOP-ABC-12345"), 12345);
+assert.equal(parsePidFromLockTarget("nope"), null);
 
 console.log("pw-rpa job-lifecycle ok");

@@ -1,13 +1,29 @@
 /**
- * PW job 生命周期：超时公式、杀进程树、pid 探活。
+ * PW job 生命周期：超时公式、杀进程树、pid 探活、陈旧 profile 锁清理。
  * 与 cli.ts 的 lastByJob 状态机配合；getPwJobStatus 保持纯读。
  */
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
+import {
+  existsSync,
+  lstatSync,
+  readlinkSync,
+  unlinkSync,
+} from "node:fs";
+import { join } from "node:path";
 import { listAdsBudgetRuns } from "./ads-budget-runs.js";
 
 const MIN_ADS_BUDGET_MS = 15 * 60_000;
+/** ads/sales 默认 90min（无历史最长耗时数据，30min 过紧） */
+const DEFAULT_EXPORT_MS = 90 * 60_000;
 const DEFAULT_JOB_MS = 30 * 60_000;
 const ADS_BUDGET_MARGIN_MS = 5 * 60_000;
+
+const LOCK_NAMES = [
+  "SingletonLock",
+  "SingletonCookie",
+  "SingletonSocket",
+  "lockfile",
+] as const;
 
 /** 上次 apply 的 todo 近似：applyOk+applyFailed；无历史则 0 */
 export function estimateLastAdsBudgetTodo(): number {
@@ -41,6 +57,7 @@ export function countShopsFromEnvOrList(
  * wall-clock 超时。
  * - keepalive ui：沿用软探测短超时
  * - ads-budget：max(15min, 60s×店 + 3s×上次todo + 5min)，可 env 覆盖
+ * - ads / sales：默认 90min（OUTPOST_PW_EXPORT_TIMEOUT_MS 或 OUTPOST_PW_JOB_TIMEOUT_MS）
  * - 其它：默认 30min，OUTPOST_PW_JOB_TIMEOUT_MS 覆盖
  */
 export function resolveJobTimeoutMs(
@@ -68,23 +85,39 @@ export function resolveJobTimeoutMs(
     const computed = shops * 60_000 + lastTodo * 3_000 + ADS_BUDGET_MARGIN_MS;
     return Math.max(MIN_ADS_BUDGET_MS, computed);
   }
+  if (job === "ads" || job === "sales") {
+    const override = Number(
+      process.env.OUTPOST_PW_EXPORT_TIMEOUT_MS ||
+        process.env.OUTPOST_PW_JOB_TIMEOUT_MS,
+    );
+    if (Number.isFinite(override) && override > 0) return Math.floor(override);
+    return DEFAULT_EXPORT_MS;
+  }
   const override = Number(process.env.OUTPOST_PW_JOB_TIMEOUT_MS);
   if (Number.isFinite(override) && override > 0) return Math.floor(override);
   return DEFAULT_JOB_MS;
 }
 
 /**
- * Windows：taskkill /T /F 杀整棵树（含 Chromium），避免 profile 锁残留。
+ * Windows：异步 taskkill /T /F（不阻塞事件循环）。
  * 其它平台：SIGKILL 目标 pid。
  */
 export function killProcessTree(pid: number): void {
   if (!Number.isFinite(pid) || pid <= 0) return;
   if (process.platform === "win32") {
-    spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], {
-      windowsHide: true,
-      timeout: 15_000,
-      encoding: "utf8",
-    });
+    try {
+      const child = spawn("taskkill", ["/PID", String(pid), "/T", "/F"], {
+        windowsHide: true,
+        stdio: "ignore",
+        detached: true,
+      });
+      child.on("error", () => {
+        /* ignore spawn failures */
+      });
+      child.unref();
+    } catch {
+      /* ignore */
+    }
     return;
   }
   try {
@@ -109,4 +142,65 @@ export function isPidAlive(pid: number): boolean {
     // EPERM 等：进程还在，只是无权发信号
     return true;
   }
+}
+
+/** 从 Chromium SingletonLock 符号链接目标解析 pid（形如 HOST-12345） */
+export function parsePidFromLockTarget(target: string): number | null {
+  const m = String(target || "").trim().match(/-(\d+)\s*$/);
+  if (!m) return null;
+  const pid = Number(m[1]);
+  return Number.isFinite(pid) && pid > 0 ? pid : null;
+}
+
+/**
+ * 清掉 profile 目录里指向已死 pid 的 Singleton* / lockfile。
+ * 活着的锁不动（避免误伤正在跑的 Chromium）。
+ */
+export function clearStaleChromiumProfileLocks(profileDir: string): {
+  cleared: string[];
+  skippedLive: string[];
+} {
+  const cleared: string[] = [];
+  const skippedLive: string[] = [];
+  if (!profileDir || !existsSync(profileDir)) {
+    return { cleared, skippedLive };
+  }
+  for (const name of LOCK_NAMES) {
+    const p = join(profileDir, name);
+    if (!existsSync(p)) continue;
+    let pid: number | null = null;
+    try {
+      const st = lstatSync(p);
+      if (st.isSymbolicLink()) {
+        pid = parsePidFromLockTarget(readlinkSync(p));
+      }
+    } catch {
+      /* 读不到就按陈旧处理 */
+    }
+    if (pid != null && isPidAlive(pid)) {
+      skippedLive.push(name);
+      continue;
+    }
+    try {
+      unlinkSync(p);
+      cleared.push(name);
+    } catch {
+      /* busy / permission — 下一轮再试 */
+    }
+  }
+  return { cleared, skippedLive };
+}
+
+export function defaultAdsProfileDir(): string {
+  return (
+    process.env.OUTPOST_ADS_PW_PROFILE?.trim() ||
+    "D:\\outpost-data\\browser-profiles\\noon-ads-pw"
+  );
+}
+
+export function defaultSellerProfileDir(): string {
+  return (
+    process.env.OUTPOST_SELLER_PW_PROFILE?.trim() ||
+    "D:\\outpost-data\\browser-profiles\\noon-seller-pw"
+  );
 }
