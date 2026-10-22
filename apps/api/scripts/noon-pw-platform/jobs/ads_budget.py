@@ -120,11 +120,50 @@ def _ensure_ads_session_or_login() -> bool:
     return False
 
 
-async def _run_for_shops(cmd: str, args: argparse.Namespace) -> tuple[int, str]:
+def _shops_for_args(args: argparse.Namespace) -> list[str]:
     if args.shops.strip():
-        shops = [s.strip().upper() for s in args.shops.split(",") if s.strip()]
-    else:
-        shops = parse_shop_whitelist()
+        return [s.strip().upper() for s in args.shops.split(",") if s.strip()]
+    return parse_shop_whitelist()
+
+
+def _record_top_level_failure(
+    *,
+    cmd: str,
+    args: argparse.Namespace,
+    error: str,
+    started_at: str,
+    started_mono: float,
+) -> None:
+    """
+    预检登录失败 / with_browser 抛异常等「根本没跑起来」的路径也要留痕。
+    最小字段；不写 results（一店都没跑）。
+    """
+    mode = resolve_mode() if args.mode == "auto" else args.mode
+    shops = _shops_for_args(args)
+    trigger = (os.environ.get("OUTPOST_ADS_BUDGET_TRIGGER") or "manual").strip() or "manual"
+    duration_ms = int((time.monotonic() - started_mono) * 1000)
+    msg = f"{cmd}/{mode} ok=False top-level fail: {error[:160]}"
+    try:
+        hist = record_run(
+            {
+                "ok": False,
+                "cmd": cmd,
+                "mode": str(mode),
+                "startedAt": started_at,
+                "durationMs": duration_ms,
+                "error": error,
+                "trigger": trigger,
+                "shops": shops,
+                "message": msg,
+            }
+        )
+        log(f"history → finishedAtCst={hist.get('finishedAtCst')} ok=False (top-level)")
+    except Exception as e:
+        log(f"record_run failed after top-level error: {e}")
+
+
+async def _run_for_shops(cmd: str, args: argparse.Namespace) -> tuple[int, str]:
+    shops = _shops_for_args(args)
     if not shops:
         log("白名单为空，退出")
         return 2, "白名单为空"
@@ -340,13 +379,24 @@ def run(argv: list[str] | None = None) -> int:
     if cmd == "ui":
         cmd = "probe"
 
+    started_mono = time.monotonic()
+    started_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
     # sync / apply / probe 共用：先保登录态，再开浏览器（夜间定时必经）
     # 登录失败禁止再开有头窗等人手填——无人值守默认开，失败只记日志退出
     if cmd in ("sync", "apply", "probe"):
         if not _ensure_ads_session_or_login():
-            log(
+            err = (
                 "无法保证登录态：无人值守登录失败。"
                 "请查 IMAP / OUTPOST_NOON_LOGIN_EMAIL；不要人工在弹窗里登。"
+            )
+            log(err)
+            _record_top_level_failure(
+                cmd=cmd,
+                args=args,
+                error=err,
+                started_at=started_at,
+                started_mono=started_mono,
             )
             return 1
         # 允许进页后再 login 一次（preflight 已登过则下面撞墙不会重复，因 TRIED）
@@ -381,7 +431,21 @@ def run(argv: list[str] | None = None) -> int:
                 return code2
             except Exception as e2:
                 log(f"retry fatal: {e2}")
+                _record_top_level_failure(
+                    cmd=cmd,
+                    args=args,
+                    error=str(e2),
+                    started_at=started_at,
+                    started_mono=started_mono,
+                )
                 return 1
+        _record_top_level_failure(
+            cmd=cmd,
+            args=args,
+            error=msg,
+            started_at=started_at,
+            started_mono=started_mono,
+        )
         return 1
 
 

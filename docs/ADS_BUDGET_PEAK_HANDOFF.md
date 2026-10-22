@@ -83,6 +83,14 @@ API：`GET/POST/PATCH/DELETE /api/pw-rpa/ads-budget/baseline`
 
 新 Live 无目标 → `needsBaseline=1`，peak apply **跳过**并打日志；表内标红「缺目标」。
 
+### 运行埋点（`ads-budget-runs.jsonl`）读数注意
+
+| 字段 | 读法 |
+|------|------|
+| `needsBaselineCount` | **仅 peak apply 有意义**。`plan_changes` 里 `needs_baseline` 跳过带 `mode == "peak"` 条件，所以 **offpeak 跑出来恒为 0**——别把 offpeak 的 0 当成「没有漏点」，要看 peak 那次。健康检查 `GET /api/pw-rpa/ads-budget/health` 直接扫 baseline.csv，不依赖本次 mode。 |
+| `durationMs` | **整轮墙钟**（含开浏览器、进店、换店）。**不等于** `scrapeMs + applyMs`。差值 = 进店导航 / `plan_changes` / 换店间隔等固定开销；前端应标成「页面/杂项」，勿当漏算。 |
+| 顶层失败 | 预检登录失败、`with_browser` 抛异常（Chromium 起不来 / profile 被占 / 超时强杀）也会 `record_run`（`ok:false`，无 `results`），避免「根本没跑起来」在历史里隐形。 |
+
 ## 与现有 ads 导出关系
 
 | | ads 导出 | ads-budget |
