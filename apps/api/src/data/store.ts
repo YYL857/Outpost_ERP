@@ -7,6 +7,7 @@ import {
   renameSync,
   unlinkSync,
 } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
@@ -421,16 +422,29 @@ export function loadState(dataDir?: string): AppState {
   return migrated;
 }
 
-/** 原子写盘，避免 tsx watch / 进程被杀时截断 state.json 导致 API 起不来 */
+/**
+ * 原子写盘，避免 tsx watch / 进程被杀时截断 state.json 导致 API 起不来。
+ *
+ * 约定：`state` 必须是进程内单例（如 shops/state-cache 里的那份），
+ * 不得传入 `loadState()` / `structuredClone` 得到的新副本再并发 save——
+ * 否则后写覆盖先写，字段更新会丢。类型约束不了这条，靠调用方遵守。
+ */
 export function saveState(state: AppState, dataDir?: string) {
   const { dataDir: dir, statePath } = getPaths(dataDir);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  const tmpPath = `${statePath}.${process.pid}.tmp`;
+  // 同进程并发 save 时 pid 相同；必须带随机后缀，否则互踩同一 tmp
+  const tmpPath = `${statePath}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
   writeFileSync(tmpPath, JSON.stringify(state, null, 2), "utf8");
   try {
     renameSync(tmpPath, statePath);
   } catch {
-    // Windows：目标存在时 rename 不能覆盖
+    // Windows：目标存在时 rename 不能覆盖。仅当本端 tmp 仍在时才删目标，
+    // 避免「先删 state.json、再 rename 失败」把盘上唯一副本弄丢。
+    if (!existsSync(tmpPath)) {
+      throw new Error(
+        `saveState: tmp missing before replace (${tmpPath}); state.json left untouched`,
+      );
+    }
     try {
       unlinkSync(statePath);
     } catch {
